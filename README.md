@@ -1,1 +1,3 @@
-# CRAYON
+# xerv-crayon
+
+High-performance tokenizer.
