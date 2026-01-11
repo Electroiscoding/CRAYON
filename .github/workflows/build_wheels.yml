@@ -1,19 +1,88 @@
-name: Build Wheels
+name: Build and Publish Wheels
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build_wheels:
     name: Build wheels on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        # Build on all major platforms to ensure universal compatibility
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
+
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.16.0
-      - uses: actions/upload-artifact@v3
+        uses: pypa/cibuildwheel@v2.19.1
+        env:
+          # 1. Python Version Control
+          # Limit to Python 3.12+ as per project specifications
+          CIBW_BUILD: cp312-*
+
+          # 2. Architecture Constraints (Critical for AVX2)
+          # Your C code uses <immintrin.h> and AVX2, which are x86 specific.
+          # We explicitly force x86_64 builds to avoid failures on ARM64 runners.
+          CIBW_ARCHS_LINUX: x86_64
+          CIBW_ARCHS_WINDOWS: AMD64
+          CIBW_ARCHS_MACOS: x86_64
+
+          # 3. Quality Assurance
+          # Run the test suite against the installed wheel to verify the C-extension
+          # doesn't segfault and actually works.
+          CIBW_TEST_COMMAND: python -m unittest discover {project}/tests
+
+      - uses: actions/upload-artifact@v4
         with:
+          name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: ./wheelhouse/*.whl
+
+  build_sdist:
+    name: Build Source Distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Build SDist
+        run: pipx run build --sdist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish_to_pypi:
+    name: Publish to PyPI
+    # Only run on tag pushes (releases)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build_wheels, build_sdist]
+    runs-on: ubuntu-latest
+    environment: 
+      name: pypi
+      url: https://pypi.org/p/xerv-crayon
+    permissions:
+      id-token: write  # IMPORTANT: Required for OIDC/Trusted Publishing
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          # Download both wheels and sdist
+          pattern: '*'
+          path: dist
+          merge-multiple: true
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Uses OIDC by default (requires setting up Trusted Publishing on PyPI)
+          # Alternatively, use password: ${{ secrets.PYPI_API_TOKEN }} if using tokens
+          verbose: true

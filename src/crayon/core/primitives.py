@@ -1,9 +1,17 @@
-# `TokenMetadata` frozen slots dataclass
-from dataclasses import dataclass
+import dataclasses
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(slots=True, frozen=True)
 class TokenMetadata:
-    __slots__ = ['id', 'text', 'score']
-    id: int
-    text: str
-    score: float
+    """
+    Slots-based dataclass eliminates dictionary overhead.
+    Frozen=True enables additional optimizations in Python 3.12+.
+    
+    Memory Layout:
+    - token_id (int): 28 bytes
+    - frequency (int): 28 bytes
+    - average_length (float): 24 bytes
+    Total per instance overhead is minimal compared to standard class.
+    """
+    token_id: int
+    frequency: int
+    average_length: float
