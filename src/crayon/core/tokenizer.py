@@ -15,11 +15,11 @@ def crayon_tokenize(text: str, vocab: CrayonVocab) -> List[int]:
     Time Complexity: O(n) due to O(1) average lookup and constant max_lookahead.
     Space Complexity: O(n) for output tokens.
     
-    Section 6.1: Specialized for Python 3.12+ [cite: 358-375].
+    Automatically uses C-Extension with SIMD acceleration if available [cite: 358-375].
     """
-    # 1. Fast Path: Use C-Extension if available [cite: 479]
-    if _C_EXT_AVAILABLE and hasattr(vocab, '_c_trie'):
-        return _core.crayon_tokenize_fast(text, len(text), vocab._c_trie, vocab.unk_token_id)
+    # 1. Fast Path: Use C-Extension if available and trie is built
+    if _C_EXT_AVAILABLE and vocab._c_ext_available and vocab._c_trie is not None:
+        return _core.crayon_tokenize_fast(text, vocab._c_trie, vocab.unk_token_id)
 
     # 2. Slow Path: Pure Python Implementation (Fallback)
     # Optimized using local variables for loop speed

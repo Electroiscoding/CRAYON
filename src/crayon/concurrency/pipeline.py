@@ -14,7 +14,6 @@ class PipelineTokenizer:
     1. Input preprocessing & normalization
     2. Vocabulary Lookup & Longest-match
     3. Token ID assignment & Formatting
-    4. Result aggregation
     """
 
     def __init__(self, vocab: CrayonVocab, pipeline_depth: int = 4):
@@ -27,18 +26,19 @@ class PipelineTokenizer:
         self.input_queue: queue.Queue = queue.Queue(maxsize=q_size)
         self.normalized_queue: queue.Queue = queue.Queue(maxsize=q_size)
         self.tokenized_queue: queue.Queue = queue.Queue(maxsize=q_size)
+        # Output queue is read by external consumers via get_result()
         self.output_queue: queue.Queue = queue.Queue(maxsize=q_size)
         
         # Pipeline stage threads [cite: 741-743]
+        # Note: Only 3 stages - output_queue is consumed by user via get_result()
         self.stages: List[threading.Thread] = [
             threading.Thread(target=self._normalize_stage, name="Stage-Normalize", daemon=True),
             threading.Thread(target=self._tokenize_stage, name="Stage-Tokenize", daemon=True),
             threading.Thread(target=self._format_stage, name="Stage-Format", daemon=True),
-            threading.Thread(target=self._output_stage, name="Stage-Output", daemon=True)
         ]
         
         # Performance monitoring [cite: 745]
-        self.stage_timings: List[deque] = [deque(maxlen=1000) for _ in range(4)]
+        self.stage_timings: List[deque] = [deque(maxlen=1000) for _ in range(3)]
         self.running = False
 
     def start_pipeline(self) -> None:
@@ -102,7 +102,7 @@ class PipelineTokenizer:
                 print(f"Pipeline Error (Tokenize): {e}")
 
     def _format_stage(self) -> None:
-        """Stage 3: Token formatting and metadata attachment[cite: 786]."""
+        """Stage 3: Token formatting and result delivery[cite: 786]."""
         while self.running:
             try:
                 item = self.tokenized_queue.get(timeout=0.1)
@@ -119,6 +119,7 @@ class PipelineTokenizer:
                 }
                 
                 self.stage_timings[2].append(time.perf_counter() - start_time)
+                # Put result in output queue for external consumers
                 self.output_queue.put(formatted_result)
                 self.tokenized_queue.task_done()
                 
@@ -127,30 +128,10 @@ class PipelineTokenizer:
             except Exception as e:
                 print(f"Pipeline Error (Format): {e}")
 
-    def _output_stage(self) -> None:
-        """Stage 4: Result aggregation and quality assurance[cite: 804]."""
-        while self.running:
-            try:
-                item = self.output_queue.get(timeout=0.1)
-                if item is None: break
-                
-                start_time = time.perf_counter()
-                
-                # In a real system, this might write to disk or callback
-                # For this class, we mark complete.
-                
-                self.stage_timings[3].append(time.perf_counter() - start_time)
-                self.output_queue.task_done()
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                print(f"Pipeline Error (Output): {e}")
-
     def submit_text(self, text_id: str, text: str) -> None:
         """Entry point for the pipeline."""
         self.input_queue.put((text_id, text))
 
-    def get_result(self) -> Any:
-        """Blocking retrieval of next result."""
-        return self.output_queue.get()
+    def get_result(self, timeout: float = 10.0) -> Any:
+        """Blocking retrieval of next result with timeout."""
+        return self.output_queue.get(timeout=timeout)

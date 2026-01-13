@@ -33,13 +33,14 @@ class ZeroCopyTokenizer:
                     # Create zero-copy memoryview [cite: 860]
                     # Includes overlap to catch tokens spanning chunks
                     view_end = min(chunk_end + overlap, file_size)
-                    chunk_view = memoryview(mmapped)[offset:view_end]
+                    # Convert to bytes immediately to avoid holding mmap reference
+                    chunk_bytes = bytes(mmapped[offset:view_end])
                     
                     # Process chunk
                     # Note: We pass is_last to know if we can consume the very end
                     is_last = (chunk_end == file_size)
                     tokens, consumed = self._tokenize_chunk_with_boundaries(
-                        chunk_view, offset, is_last
+                        memoryview(chunk_bytes), offset, is_last
                     )
                     
                     for tid in tokens:

@@ -1,5 +1,4 @@
 import threading
-import weakref
 from typing import List, Set, Optional
 
 class MemoryPool:
@@ -15,8 +14,8 @@ class MemoryPool:
         self.pool_size = pool_size
         
         self.available_buffers: List[bytearray] = []
-        # WeakSet tracks in-use buffers without preventing GC if user leaks them
-        self.in_use_buffers: weakref.WeakSet = weakref.WeakSet()
+        # Track in-use buffers by their id() since bytearrays don't support weak refs
+        self.in_use_buffer_ids: Set[int] = set()
         self.lock = threading.Lock()
         
         # Pre-populate pool [cite: 919]
@@ -36,13 +35,13 @@ class MemoryPool:
                     buf = self.available_buffers.pop()
                     # Security: clear residual data [cite: 938]
                     # buf[:] = b'\x00' * len(buf) # Expensive, optimize if needed
-                    self.in_use_buffers.add(buf)
+                    self.in_use_buffer_ids.add(id(buf))
                     return buf
         
         # Slow path / Non-standard size
         buf = bytearray(size)
         if size == self.chunk_size:
-             self.in_use_buffers.add(buf)
+             self.in_use_buffer_ids.add(id(buf))
         return buf
 
     def return_buffer(self, buffer: bytearray) -> None:
@@ -55,4 +54,4 @@ class MemoryPool:
         with self.lock:
             if len(self.available_buffers) < self.pool_size:
                 self.available_buffers.append(buffer)
-                self.in_use_buffers.discard(buffer)
+                self.in_use_buffer_ids.discard(id(buffer))

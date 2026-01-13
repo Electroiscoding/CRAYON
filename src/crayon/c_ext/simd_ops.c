@@ -1,116 +1,153 @@
 #include "simd_ops.h"
-#include <immintrin.h> // Intel Intrinsics
+#include <immintrin.h>
 #include <string.h>
 
-// ----------------------------------------------------------------------------
-// SIMD Child Lookup
-// ----------------------------------------------------------------------------
-
-int find_child_simd(const uint8_t* child_chars, int count, uint8_t target) {
-    // If count is small, linear search is faster than setting up SIMD
-    if (count < 16) {
-        for (int i = 0; i < count; i++) {
-            if (child_chars[i] == target) return i;
-        }
-        return -1;
+// Cross-platform count trailing zeros (CTZ) macro
+#if defined(_MSC_VER)
+    #include <intrin.h>
+    static __inline int ctz32(uint32_t value) {
+        unsigned long index;
+        _BitScanForward(&index, value);
+        return (int)index;
     }
+    #define CTZ(x) ctz32(x)
+#else
+    #define CTZ(x) __builtin_ctz(x)
+#endif
 
-    // Broadcast target character to all 32 bytes of a YMM register
-    __m256i target_vec = _mm256_set1_epi8((char)target);
-
-    int i = 0;
-    // Process in chunks of 32
-    for (; i <= count - 32; i += 32) {
-        // Load 32 child characters (unaligned load is safe on modern CPUs)
-        __m256i children_vec = _mm256_loadu_si256((const __m256i*)(child_chars + i));
-        
-        // Compare: result bytes are 0xFF if equal, 0x00 otherwise
-        __m256i cmp = _mm256_cmpeq_epi8(target_vec, children_vec);
-        
-        // Create a bitmask from the comparison result
-        uint32_t mask = (uint32_t)_mm256_movemask_epi8(cmp);
-        
-        if (mask != 0) {
-            // Found a match! Count trailing zeros to get the index.
-            // __builtin_ctz is GCC/Clang specific. MSVC uses _BitScanForward.
-            return i + __builtin_ctz(mask);
-        }
+// Helper for binary search fallback [cite: 426]
+static inline int binary_search_chars(const uint8_t* chars, int count, uint8_t target) {
+    int left = 0, right = count - 1;
+    while (left <= right) {
+        int mid = left + (right - left) / 2;
+        if (chars[mid] == target) return mid;
+        if (chars[mid] < target) left = mid + 1;
+        else right = mid - 1;
     }
-
-    // Handle remaining elements scalar way
-    for (; i < count; i++) {
-        if (child_chars[i] == target) return i;
-    }
-
     return -1;
 }
 
-// ----------------------------------------------------------------------------
-// SIMD String Comparison
-// ----------------------------------------------------------------------------
+// [cite: 414] SIMD-optimized character search
+int find_child_simd(const TrieNode* node, uint8_t target_char) {
+    // Handle empty nodes (leaf nodes with no children)
+    if (node->child_count == 0 || node->child_chars == NULL) {
+        return -1;
+    }
+    
+    // [cite: 415] Use SIMD for small child sets (<= 16)
+    if (node->child_count <= 16) {
+        // [cite: 418] Set target vector
+        __m128i target_vec = _mm_set1_epi8((char)target_char);
+        
+        // Load child characters (unaligned load is safe)
+        // Note: child_chars must be padded to 16 bytes allocation-side
+        __m128i chars_vec = _mm_loadu_si128((__m128i*)node->child_chars);
+        
+        // [cite: 420] Compare
+        __m128i cmp_result = _mm_cmpeq_epi8(target_vec, chars_vec);
+        
+        // [cite: 421] Create mask
+        int mask = _mm_movemask_epi8(cmp_result);
+        
+        // Mask out positions beyond child_count
+        mask &= (1 << node->child_count) - 1;
+        
+        // [cite: 422] Check result
+        if (mask == 0) return -1;
+        
+        // [cite: 423] Return index of first match (Count Trailing Zeros)
+        return CTZ((uint32_t)mask);
+    } else {
+        // [cite: 425] Fallback to binary search for large child sets
+        return binary_search_chars(node->child_chars, node->child_count, target_char);
+    }
+}
 
-int compare_strings_simd(const char* s1, const char* s2, size_t len) {
+// [cite: 487] Compare strings using AVX2
+int compare_strings_avx2(const char* str1, const char* str2, size_t length) {
     size_t i = 0;
     
-    // Process 32-byte chunks
-    for (; i + 32 <= len; i += 32) {
-        __m256i v1 = _mm256_loadu_si256((const __m256i*)(s1 + i));
-        __m256i v2 = _mm256_loadu_si256((const __m256i*)(s2 + i));
+    // [cite: 489] Process in 32-byte chunks
+    for (; i + 32 <= length; i += 32) {
+        // Load 256-bit vectors
+        __m256i vec1 = _mm256_loadu_si256((const __m256i*)(str1 + i));
+        __m256i vec2 = _mm256_loadu_si256((const __m256i*)(str2 + i));
         
-        // Compare equality
-        __m256i eq = _mm256_cmpeq_epi8(v1, v2);
+        // [cite: 493] Compare equality
+        __m256i cmp = _mm256_cmpeq_epi8(vec1, vec2);
         
-        // Move mask: if all bits are 1 (0xFFFFFFFF), strings are equal in this chunk
-        uint32_t mask = (uint32_t)_mm256_movemask_epi8(eq);
+        // [cite: 495] Move mask
+        uint32_t mask = (uint32_t)_mm256_movemask_epi8(cmp);
         
+        // [cite: 496] If not all ones (0xFFFFFFFF), we found a mismatch
         if (mask != 0xFFFFFFFF) {
-            // Mismatch found. The mask has 0s where bytes differ.
-            // Invert mask to find 1s at mismatch positions.
-            uint32_t diff_mask = ~mask;
-            int offset = __builtin_ctz(diff_mask);
-            // Return difference of the specific mismatching bytes
-            return (unsigned char)s1[i + offset] - (unsigned char)s2[i + offset];
+            // [cite: 498] Find exact position
+            int offset = CTZ(~mask);
+            return (unsigned char)str1[i + offset] - (unsigned char)str2[i + offset];
         }
     }
     
-    // Handle remaining bytes
-    return memcmp(s1 + i, s2 + i, len - i);
-}
-
-// ----------------------------------------------------------------------------
-// SIMD Character Classification
-// ----------------------------------------------------------------------------
-
-void classify_chars_simd(const uint8_t* src, size_t len, uint8_t* out_mask) {
-    // Constants for ranges
-    const __m256i 'a' = _mm256_set1_epi8('a');
-    const __m256i 'z' = _mm256_set1_epi8('z');
-    const __m256i '0' = _mm256_set1_epi8('0');
-    const __m256i '9' = _mm256_set1_epi8('9');
-    const __m256i space = _mm256_set1_epi8(' ');
-
-    size_t i = 0;
-    for (; i + 32 <= len; i += 32) {
-        __m256i chars = _mm256_loadu_si256((const __m256i*)(src + i));
-        
-        // Check ranges (Note: PCMPGT compares signed bytes)
-        // Trick: (c >= 'a' && c <= 'z') can be done with unsigned comparisons or carefully range shifting
-        // Here we use standard signed comparison logic for simplicity
-        
-        // Is Lower Alpha: chars >= 'a' AND chars <= 'z'
-        // (Implementation omitted for brevity, usually involves sub/add wrapper)
-        // ...
-        
-        // Placeholder for the "is_space" logic which is simplest:
-        __m256i is_sp = _mm256_cmpeq_epi8(chars, space);
-        
-        // Store 0xFF where space, 0x00 otherwise directly to output mask
-        // In reality we pack bits, but here we write byte-masks for simplicity
-        _mm256_storeu_si256((__m256i*)(out_mask + i), is_sp);
+    // [cite: 502] Handle remaining bytes
+    for (; i < length; i++) {
+        if (str1[i] != str2[i]) {
+            return (unsigned char)str1[i] - (unsigned char)str2[i];
+        }
     }
     
-    // Scalar fallback
-    for (; i < len; i++) {
-        out_mask[i] = (src[i] == ' ') ? 0xFF : 0x00;
+    // [cite: 505] Strings match
+    return 0;
+}
+
+// [cite: 525] Vectorized Character Classification
+void classify_characters_avx2(const uint8_t* chars, uint8_t* classifications, size_t count) {
+    // [cite: 526-529] Pre-computed constants
+    const __m256i alpha_min = _mm256_set1_epi8('a');
+    const __m256i alpha_max = _mm256_set1_epi8('z');
+    const __m256i digit_min = _mm256_set1_epi8('0');
+    const __m256i digit_max = _mm256_set1_epi8('9');
+    const __m256i space_char = _mm256_set1_epi8(' ');
+    
+    size_t i = 0;
+    // [cite: 530] Loop 32 chars at a time
+    for (; i + 32 <= count; i += 32) {
+        // [cite: 532] Load
+        __m256i char_vec = _mm256_loadu_si256((const __m256i*)(chars + i));
+        
+        // [cite: 533-536] Is Alpha logic (simplified for AVX comparison quirks)
+        // Note: PCMPGT compares signed bytes. We assume ASCII range here.
+        __m256i is_alpha = _mm256_and_si256(
+            _mm256_cmpgt_epi8(char_vec, _mm256_sub_epi8(alpha_min, _mm256_set1_epi8(1))),
+            _mm256_cmpgt_epi8(_mm256_add_epi8(alpha_max, _mm256_set1_epi8(1)), char_vec)
+        );
+
+        // [cite: 537-539] Is Digit logic
+        __m256i is_digit = _mm256_and_si256(
+            _mm256_cmpgt_epi8(char_vec, _mm256_sub_epi8(digit_min, _mm256_set1_epi8(1))),
+            _mm256_cmpgt_epi8(_mm256_add_epi8(digit_max, _mm256_set1_epi8(1)), char_vec)
+        );
+        
+        // [cite: 540] Is Space
+        __m256i is_space = _mm256_cmpeq_epi8(char_vec, space_char);
+        
+        // [cite: 543-544] Combine results: Alpha=1, Digit=2, Space=4
+        __m256i result = _mm256_or_si256(
+            _mm256_and_si256(is_alpha, _mm256_set1_epi8(1)),
+            _mm256_or_si256(
+                _mm256_and_si256(is_digit, _mm256_set1_epi8(2)),
+                _mm256_and_si256(is_space, _mm256_set1_epi8(4))
+            )
+        );
+        
+        // [cite: 546] Store
+        _mm256_storeu_si256((__m256i*)(classifications + i), result);
+    }
+    
+    // Fallback for remaining
+    for (; i < count; i++) {
+        uint8_t c = chars[i];
+        classifications[i] = 0;
+        if (c >= 'a' && c <= 'z') classifications[i] |= 1;
+        if (c >= '0' && c <= '9') classifications[i] |= 2;
+        if (c == ' ') classifications[i] |= 4;
     }
 }

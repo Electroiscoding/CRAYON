@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xerv-crayon"
-version = "1.0.0"
+version = "1.1.0"
 description = "Production-grade tokenizer achieving >2M tokens/s via AVX2 optimizations."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -29,6 +29,22 @@ classifiers = [
     "Operating System :: MacOS"
 ]
 
+# Core dependencies (minimal for basic usage)
+dependencies = []
+
+# Optional dependencies for full functionality
+[project.optional-dependencies]
+full = [
+    "requests>=2.31.0",
+    "datasets>=2.18.0",
+    "huggingface-hub>=0.21.0"
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-benchmark>=4.0.0"
+]
+
 [project.urls]
-Homepage = "https://xerv.netlify.app/"
-Repository = "https://github.com/xerv/crayon"
+Homepage = "https://github.com/xerv/crayon"
+Repository = "https://github.com/xerv/crayon.git"
+Documentation = "https://github.com/xerv/crayon#readme"

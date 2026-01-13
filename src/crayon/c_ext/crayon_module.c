@@ -1,71 +1,231 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#include <stdlib.h>
+#include <string.h>
 #include "trie_node.h"
 #include "simd_ops.h"
 
 // ----------------------------------------------------------------------------
-// Internal Helper: Longest Match
+// Builder Structures (Intermediate, non-aligned for construction)
+// ----------------------------------------------------------------------------
+
+typedef struct BuilderNode {
+    int32_t token_id;
+    uint8_t key;
+    struct BuilderNode* first_child;
+    struct BuilderNode* next_sibling;
+} BuilderNode;
+
+static BuilderNode* create_builder_node(uint8_t key) {
+    BuilderNode* node = (BuilderNode*)malloc(sizeof(BuilderNode));
+    if (node) {
+        node->token_id = -1;
+        node->key = key;
+        node->first_child = NULL;
+        node->next_sibling = NULL;
+    }
+    return node;
+}
+
+static void free_builder_node(BuilderNode* node) {
+    if (!node) return;
+    free_builder_node(node->first_child);
+    free_builder_node(node->next_sibling);
+    free(node);
+}
+
+// ----------------------------------------------------------------------------
+// Trie Memory Management
 // ----------------------------------------------------------------------------
 
 /**
- * @brief Finds the longest matching token starting at `text`.
- * * @param root The root of the trie.
- * @param text The text buffer pointer.
- * @param remaining_len Number of bytes left in the text.
- * @param out_token_id Pointer to store the found token ID.
- * @param out_match_len Pointer to store the length of the match.
+ * @brief Recursively frees the TrieNode structure contents.
  */
-static inline void find_longest_match_c(const TrieNode* root, 
-                                        const char* text, 
-                                        Py_ssize_t remaining_len,
-                                        int32_t* out_token_id, 
-                                        int* out_match_len) {
-    const TrieNode* node = root;
-    *out_token_id = -1; // Default: no match
-    *out_match_len = 0;
-    
-    int current_len = 0;
-    int limit = (remaining_len > 256) ? 256 : (int)remaining_len; // Max token length limit
+static void free_trie_node_contents(TrieNode* node) {
+    if (!node) return;
 
-    while (current_len < limit) {
-        uint8_t c = (uint8_t)text[current_len];
+    if (node->child_count > 0 && node->children) {
+        for (uint16_t i = 0; i < node->child_count; i++) {
+            // Recurse to free grandchildren arrays
+            free_trie_node_contents(&node->children[i]);
+        }
+        // Free aligned arrays - use our aligned free
+        free_trie_node_array(node->children);
+        free(node->child_chars);
+        node->children = NULL;
+        node->child_chars = NULL;
+    }
+}
+
+static void capsule_cleanup(PyObject* capsule) {
+    TrieNode* root = (TrieNode*)PyCapsule_GetPointer(capsule, "crayon_trie_root");
+    if (root) {
+        free_trie_node_contents(root);
+        // Free the root itself (allocated with aligned_alloc_64)
+        aligned_free_64(root);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Builder Logic - Populate TrieNode from BuilderNode with ALIGNED allocation
+// ----------------------------------------------------------------------------
+
+static int populate_trie_node(TrieNode* t_node, BuilderNode* b_node) {
+    // Clear to zeros
+    memset(t_node, 0, sizeof(TrieNode));
+    t_node->token_id = b_node->token_id;
+    t_node->child_bitmap = 0;
+    
+    // Count children
+    int count = 0;
+    BuilderNode* curr = b_node->first_child;
+    while (curr) { count++; curr = curr->next_sibling; }
+    t_node->child_count = (uint16_t)count;
+
+    if (count > 0) {
+        // Allocate ALIGNED Children Array (CRITICAL for cache line optimization)
+        t_node->children = alloc_trie_node_array(count);
+        if (!t_node->children) return -1;
         
-        // 1. Fast Path: Check Bitmap (for ASCII)
-        // If child_bitmap is used, check bit (c & 63) if c < 64...
-        // For this implementation, we go straight to child lookup.
+        // Allocate Char Array (Padding for SIMD over-read safety - round up to 32)
+        int char_pad = (count + 31) & ~31;
+        t_node->child_chars = (uint8_t*)calloc(char_pad, sizeof(uint8_t));
+        if (!t_node->child_chars) {
+            free_trie_node_array(t_node->children);
+            t_node->children = NULL;
+            return -1;
+        }
+
+        // Sort children by key for binary search (required for SIMD masking)
+        // First collect into arrays
+        BuilderNode** child_ptrs = (BuilderNode**)malloc(count * sizeof(BuilderNode*));
+        if (!child_ptrs) {
+            free_trie_node_array(t_node->children);
+            free(t_node->child_chars);
+            return -1;
+        }
         
-        // 2. Find child
-        // Assuming children are contiguous and we have a separate char array for SIMD.
-        // In this production struct, 'padding' would hold the char array for small nodes.
-        // For demonstration, we assume a helper get_child exists or we scan children.
-        // Implementation detail: We iterate children array directly here.
+        curr = b_node->first_child;
+        for (int i = 0; i < count; i++) {
+            child_ptrs[i] = curr;
+            curr = curr->next_sibling;
+        }
         
-        const TrieNode* next_node = NULL;
-        
-        // Scalar scan for correctness in this simplified struct layout
-        // In full optimization, we use find_child_simd on the 'padding' area
-        for (int i = 0; i < node->child_count; i++) {
-            // NOTE: A real implementation would store the 'char key' inside the child 
-            // or in a parallel array. Here we assume a hypothetical layout where
-            // we can retrieve the key. 
-            // Let's assume the first byte of padding is the key for simplicity of the example.
-            if (node->children[i].padding[0] == c) {
-                next_node = &node->children[i];
-                break;
+        // Sort by key (simple insertion sort for small arrays)
+        for (int i = 1; i < count; i++) {
+            BuilderNode* key_node = child_ptrs[i];
+            int j = i - 1;
+            while (j >= 0 && child_ptrs[j]->key > key_node->key) {
+                child_ptrs[j + 1] = child_ptrs[j];
+                j--;
+            }
+            child_ptrs[j + 1] = key_node;
+        }
+
+        // Populate in sorted order
+        for (int i = 0; i < count; i++) {
+            BuilderNode* child_b = child_ptrs[i];
+            t_node->child_chars[i] = child_b->key;
+            
+            // Set bitmap bit for O(1) existence check (ASCII only)
+            if (child_b->key < 64) {
+                t_node->child_bitmap |= (1ULL << child_b->key);
+            }
+            
+            // Recurse to populate child (in aligned array)
+            if (populate_trie_node(&t_node->children[i], child_b) != 0) {
+                free(child_ptrs);
+                return -1;
             }
         }
         
-        if (!next_node) break; // No path forward
-        
-        node = next_node;
-        current_len++;
-        
-        // Update best match if this node is a valid token
-        if (node->token_id != -1) {
-            *out_token_id = node->token_id;
-            *out_match_len = current_len;
-        }
+        free(child_ptrs);
     }
+    return 0;
+}
+
+// ----------------------------------------------------------------------------
+// Python Method: build_trie
+// ----------------------------------------------------------------------------
+
+static PyObject* crayon_build_trie(PyObject* self, PyObject* args) {
+    PyObject* token_list;
+    if (!PyArg_ParseTuple(args, "O", &token_list)) return NULL;
+    if (!PyList_Check(token_list)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a list of strings");
+        return NULL;
+    }
+
+    // 1. Build Intermediate Tree (linked-list based for easy construction)
+    BuilderNode* root_b = create_builder_node(0);
+    if (!root_b) {
+        PyErr_NoMemory();
+        return NULL;
+    }
+    
+    Py_ssize_t num_tokens = PyList_Size(token_list);
+
+    for (Py_ssize_t i = 0; i < num_tokens; i++) {
+        PyObject* item = PyList_GetItem(token_list, i);
+        const char* token = PyUnicode_AsUTF8(item);
+        if (!token) { 
+            free_builder_node(root_b); 
+            return NULL; 
+        }
+
+        // Skip empty tokens
+        if (*token == '\0') continue;
+
+        BuilderNode* curr = root_b;
+        for (const char* c = token; *c; c++) {
+            uint8_t key = (uint8_t)*c;
+            
+            // Find existing child
+            BuilderNode* child = curr->first_child;
+            BuilderNode* prev = NULL;
+            while (child && child->key != key) {
+                prev = child;
+                child = child->next_sibling;
+            }
+
+            if (!child) {
+                // Create new child
+                child = create_builder_node(key);
+                if (!child) {
+                    free_builder_node(root_b);
+                    PyErr_NoMemory();
+                    return NULL;
+                }
+                if (prev) prev->next_sibling = child;
+                else curr->first_child = child;
+            }
+            curr = child;
+        }
+        // Mark end of token
+        curr->token_id = (int32_t)i;
+    }
+
+    // 2. Allocate the Root (64-byte aligned)
+    TrieNode* root_t = alloc_trie_node();
+    if (!root_t) {
+        free_builder_node(root_b);
+        PyErr_NoMemory();
+        return NULL;
+    }
+
+    // 3. Populate the optimized trie from builder
+    if (populate_trie_node(root_t, root_b) != 0) {
+        free_builder_node(root_b);
+        aligned_free_64(root_t);
+        PyErr_NoMemory();
+        return NULL;
+    }
+
+    // 4. Cleanup Builder Tree
+    free_builder_node(root_b);
+
+    // 5. Wrap in Capsule with destructor
+    return PyCapsule_New(root_t, "crayon_trie_root", capsule_cleanup);
 }
 
 // ----------------------------------------------------------------------------
@@ -74,69 +234,81 @@ static inline void find_longest_match_c(const TrieNode* root,
 
 static PyObject* crayon_tokenize_fast(PyObject* self, PyObject* args) {
     const char* text;
-    Py_ssize_t text_len;
-    PyObject* trie_capsule; // Capsule containing the TrieNode* root
+    Py_ssize_t text_length;
+    PyObject* vocab_obj;
     int unk_token_id;
 
-    if (!PyArg_ParseTuple(args, "s#Oi", &text, &text_len, &trie_capsule, &unk_token_id)) {
+    if (!PyArg_ParseTuple(args, "s#Oi", &text, &text_length, &vocab_obj, &unk_token_id)) {
         return NULL;
     }
 
-    // Extract C pointer from Capsule
-    TrieNode* root = (TrieNode*)PyCapsule_GetPointer(trie_capsule, "crayon_trie_root");
-    if (!root) return NULL;
+    TrieNode* root = (TrieNode*)PyCapsule_GetPointer(vocab_obj, "crayon_trie_root");
+    if (!root) {
+        PyErr_SetString(PyExc_ValueError, "Invalid Trie Capsule");
+        return NULL;
+    }
 
-    // Pre-allocate list (heuristic size: text_len / 4)
-    PyObject* result_list = PyList_New(0);
-    if (!result_list) return NULL;
-
-    Py_ssize_t pos = 0;
+    // Pre-allocate result list with estimated capacity
+    Py_ssize_t estimated_tokens = text_length / 4 + 1;
+    PyObject* result = PyList_New(0);
+    if (!result) return NULL;
     
-    // RELEASE GIL: The core loop is pure C and touches no Python objects
-    // We only re-acquire to append to list (which is expensive, so in a real
-    // zero-copy version we'd write to a C int array and convert at the end).
-    // For this version, we keep GIL for list operations but logic is fast C.
-    
-    // Optimization: Buffer for C ints to minimize PyList overhead
-    #define BUFFER_SIZE 1024
-    int32_t token_buffer[BUFFER_SIZE];
-    int buf_idx = 0;
+    Py_ssize_t position = 0;
 
-    while (pos < text_len) {
+    // Hot Loop Optimization: Pre-create unk token object
+    PyObject* py_unk = PyLong_FromLong(unk_token_id);
+    if (!py_unk) {
+        Py_DECREF(result);
+        return NULL;
+    }
+
+    while (position < text_length) {
+        int match_length = 0;
         int32_t token_id = -1;
-        int match_len = 0;
+        
+        const TrieNode* curr = root;
+        int curr_len = 0;
+        
+        // Max lookahead or remaining string length
+        Py_ssize_t limit = text_length - position;
+        const char* sub = text + position;
 
-        // Perform longest match lookup
-        find_longest_match_c(root, text + pos, text_len - pos, &token_id, &match_len);
+        for (Py_ssize_t i = 0; i < limit; i++) {
+            uint8_t target = (uint8_t)sub[i];
+            
+            // SIMD Child Lookup [cite: 414]
+            int idx = find_child_simd(curr, target);
+            if (idx == -1) break;
 
-        if (match_len > 0) {
-            token_buffer[buf_idx++] = token_id;
-            pos += match_len;
-        } else {
-            // Unknown character
-            token_buffer[buf_idx++] = unk_token_id;
-            pos += 1;
-        }
+            curr = &curr->children[idx];
+            curr_len++;
 
-        // Flush buffer if full
-        if (buf_idx >= BUFFER_SIZE) {
-            for (int i = 0; i < buf_idx; i++) {
-                PyObject* val = PyLong_FromLong(token_buffer[i]);
-                PyList_Append(result_list, val);
-                Py_DECREF(val);
+            // Track longest match
+            if (curr->token_id != -1) {
+                token_id = curr->token_id;
+                match_length = curr_len;
             }
-            buf_idx = 0;
+        }
+
+        if (match_length > 0) {
+            PyObject* val = PyLong_FromLong(token_id);
+            if (!val) {
+                Py_DECREF(py_unk);
+                Py_DECREF(result);
+                return NULL;
+            }
+            PyList_Append(result, val);
+            Py_DECREF(val);
+            position += match_length;
+        } else {
+            // Unknown character - use pre-created object
+            PyList_Append(result, py_unk);
+            position += 1;
         }
     }
-
-    // Flush remaining
-    for (int i = 0; i < buf_idx; i++) {
-        PyObject* val = PyLong_FromLong(token_buffer[i]);
-        PyList_Append(result_list, val);
-        Py_DECREF(val);
-    }
-
-    return result_list;
+    
+    Py_DECREF(py_unk);
+    return result;
 }
 
 // ----------------------------------------------------------------------------
@@ -144,15 +316,15 @@ static PyObject* crayon_tokenize_fast(PyObject* self, PyObject* args) {
 // ----------------------------------------------------------------------------
 
 static PyMethodDef CrayonMethods[] = {
-    {"crayon_tokenize_fast", crayon_tokenize_fast, METH_VARARGS, 
-     "Fast tokenization using AVX2 optimized Trie traversal."},
+    {"build_trie", crayon_build_trie, METH_VARARGS, "Build SIMD-optimized C-Trie from token list"},
+    {"crayon_tokenize_fast", crayon_tokenize_fast, METH_VARARGS, "SIMD-accelerated tokenization"},
     {NULL, NULL, 0, NULL}
 };
 
 static struct PyModuleDef crayon_core_module = {
     PyModuleDef_HEAD_INIT,
     "crayon.c_ext._core",
-    "High-performance C extension for Crayon tokenizer.",
+    "High-Performance Crayon Core with AVX2 SIMD",
     -1,
     CrayonMethods
 };
