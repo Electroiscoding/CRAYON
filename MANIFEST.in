@@ -1,16 +1,4 @@
 include LICENSE
 include README.md
-include pyproject.toml
-include setup.py
-
-# Include C source headers
-include src/crayon/c_ext/*.h
-include src/crayon/c_ext/*.c
-
-# Include standard init files
-global-include __init__.py
-
-# Exclude test artifacts
-prune tests
-prune benchmarks
-exclude .gitignore
+recursive-include src/crayon/resources *
+recursive-include src/crayon/c_ext *.h *.c

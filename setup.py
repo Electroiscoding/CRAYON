@@ -112,6 +112,7 @@ setup(
     },
     
     python_requires=">=3.12",
+    include_package_data=True,
     zip_safe=False,  # C-extensions cannot be zipped safely
     
     classifiers=[
