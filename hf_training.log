@@ -1,0 +1,84 @@
+2026-01-13 19:53:01,771 - INFO - HuggingFace datasets library loaded successfully
+2026-01-13 19:53:01,876 - INFO - ======================================================================
+2026-01-13 19:53:01,876 - INFO - XERV Crayon: HuggingFace Dataset Training
+2026-01-13 19:53:01,876 - INFO - Started: 2026-01-13 19:53:01
+2026-01-13 19:53:01,877 - INFO - ======================================================================
+2026-01-13 19:53:01,877 - INFO - 
+2026-01-13 19:53:01,877 - INFO - [1] Loading existing vocabulary from trained_vocab.json...
+2026-01-13 19:53:04,233 - INFO -     Loaded 76,593 tokens
+2026-01-13 19:53:04,234 - INFO -     C-Extension: Enabled
+2026-01-13 19:53:04,234 - INFO -     Reconstructing ID mapping...
+2026-01-13 19:53:04,281 - INFO - 
+2026-01-13 19:53:04,281 - INFO - [2] Downloading and processing HuggingFace datasets...
+2026-01-13 19:53:04,281 - INFO -     This may take 10-30 minutes depending on network speed.
+2026-01-13 19:53:04,281 - INFO - 
+2026-01-13 19:53:04,281 - INFO - [TRAIN] Starting Entropy-Guided Vocabulary Construction...
+2026-01-13 19:53:04,282 - INFO - Starting Entropy-Guided Vocabulary Construction...
+2026-01-13 19:53:04,282 - INFO - ============================================================
+2026-01-13 19:53:04,282 - INFO - Starting HuggingFace Dataset Download and Processing
+2026-01-13 19:53:04,282 - INFO - ============================================================
+2026-01-13 19:53:04,282 - INFO - Total datasets to process: 8
+2026-01-13 19:53:04,282 - INFO - 
+2026-01-13 19:53:04,282 - INFO - [1/8] Processing: sahil2801/CodeAlpaca-20k
+2026-01-13 19:53:04,283 - INFO - Loading: sahil2801/CodeAlpaca-20k (CodeAlpaca instruction-following dataset)
+2026-01-13 19:53:04,283 - INFO -   Target samples: 20,000
+2026-01-13 19:53:06,899 - INFO - HTTP Request: HEAD https://huggingface.co/datasets/sahil2801/CodeAlpaca-20k/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+2026-01-13 19:53:06,929 - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/sahil2801/CodeAlpaca-20k/152bb5e9a29651266b018106053980070a0521a1/README.md "HTTP/1.1 200 OK"
+2026-01-13 19:53:06,981 - INFO - HTTP Request: GET https://huggingface.co/api/resolve-cache/datasets/sahil2801/CodeAlpaca-20k/152bb5e9a29651266b018106053980070a0521a1/README.md "HTTP/1.1 200 OK"
+2026-01-13 19:53:07,308 - INFO - HTTP Request: HEAD https://huggingface.co/datasets/sahil2801/CodeAlpaca-20k/resolve/152bb5e9a29651266b018106053980070a0521a1/CodeAlpaca-20k.py "HTTP/1.1 404 Not Found"
+2026-01-13 19:53:08,245 - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/sahil2801/CodeAlpaca-20k/sahil2801/CodeAlpaca-20k.py "HTTP/1.1 404 Not Found"
+2026-01-13 19:53:08,606 - INFO - HTTP Request: GET https://huggingface.co/api/datasets/sahil2801/CodeAlpaca-20k/revision/152bb5e9a29651266b018106053980070a0521a1 "HTTP/1.1 200 OK"
+2026-01-13 19:53:08,925 - INFO - HTTP Request: HEAD https://huggingface.co/datasets/sahil2801/CodeAlpaca-20k/resolve/152bb5e9a29651266b018106053980070a0521a1/.huggingface.yaml "HTTP/1.1 404 Not Found"
+2026-01-13 19:53:09,336 - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=sahil2801/CodeAlpaca-20k "HTTP/1.1 200 OK"
+2026-01-13 19:53:09,810 - INFO - HTTP Request: GET https://huggingface.co/api/datasets/sahil2801/CodeAlpaca-20k/tree/152bb5e9a29651266b018106053980070a0521a1/data?recursive=true&expand=false "HTTP/1.1 404 Not Found"
+2026-01-13 19:53:10,725 - INFO - HTTP Request: GET https://huggingface.co/api/datasets/sahil2801/CodeAlpaca-20k/tree/152bb5e9a29651266b018106053980070a0521a1?recursive=false&expand=false "HTTP/1.1 200 OK"
+2026-01-13 19:53:11,963 - INFO - HTTP Request: HEAD https://huggingface.co/datasets/sahil2801/CodeAlpaca-20k/resolve/152bb5e9a29651266b018106053980070a0521a1/dataset_infos.json "HTTP/1.1 404 Not Found"
+2026-01-13 19:53:12,308 - INFO - HTTP Request: GET https://huggingface.co/datasets/sahil2801/CodeAlpaca-20k/resolve/152bb5e9a29651266b018106053980070a0521a1/code_alpaca_20k.json "HTTP/1.1 307 Temporary Redirect"
+2026-01-13 19:53:12,612 - INFO - HTTP Request: GET https://huggingface.co/api/resolve-cache/datasets/sahil2801/CodeAlpaca-20k/152bb5e9a29651266b018106053980070a0521a1/code_alpaca_20k.json?%2Fdatasets%2Fsahil2801%2FCodeAlpaca-20k%2Fresolve%2F152bb5e9a29651266b018106053980070a0521a1%2Fcode_alpaca_20k.json=&etag=%224599591b17572755907bd945e34d25a956dcab09%22 "HTTP/1.1 206 Partial Content"
+2026-01-13 19:53:14,241 - INFO - HTTP Request: GET https://huggingface.co/datasets/sahil2801/CodeAlpaca-20k/resolve/152bb5e9a29651266b018106053980070a0521a1/code_alpaca_20k.json "HTTP/1.1 307 Temporary Redirect"
+2026-01-13 19:53:14,284 - INFO - HTTP Request: GET https://huggingface.co/api/resolve-cache/datasets/sahil2801/CodeAlpaca-20k/152bb5e9a29651266b018106053980070a0521a1/code_alpaca_20k.json?%2Fdatasets%2Fsahil2801%2FCodeAlpaca-20k%2Fresolve%2F152bb5e9a29651266b018106053980070a0521a1%2Fcode_alpaca_20k.json=&etag=%224599591b17572755907bd945e34d25a956dcab09%22 "HTTP/1.1 200 OK"
+2026-01-13 19:53:57,552 - INFO -   sahil2801/CodeAlpaca-20k: 5,000/20,000 samples loaded...
+2026-01-13 19:55:14,614 - INFO -   sahil2801/CodeAlpaca-20k: 10,000/20,000 samples loaded...
+2026-01-13 19:56:05,460 - INFO -   sahil2801/CodeAlpaca-20k: 15,000/20,000 samples loaded...
+2026-01-13 19:56:47,991 - INFO -   sahil2801/CodeAlpaca-20k: 20,000/20,000 samples loaded...
+2026-01-13 19:56:48,068 - INFO -   Completed: 20,000 samples from sahil2801/CodeAlpaca-20k
+2026-01-13 19:56:48,090 - INFO - 
+2026-01-13 19:56:48,100 - INFO - [2/8] Processing: iamtarun/python_code_instructions_18k_alpaca
+2026-01-13 19:56:48,102 - INFO - Loading: iamtarun/python_code_instructions_18k_alpaca (Python code instructions dataset)
+2026-01-13 19:56:48,102 - INFO -   Target samples: 18,000
+2026-01-13 19:56:49,342 - INFO - HTTP Request: HEAD https://huggingface.co/datasets/iamtarun/python_code_instructions_18k_alpaca/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+2026-01-13 19:56:49,427 - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/iamtarun/python_code_instructions_18k_alpaca/7cae181e29701a8663a07a3ea43c8e105b663ba1/README.md "HTTP/1.1 200 OK"
+2026-01-13 19:56:49,766 - INFO - HTTP Request: GET https://huggingface.co/api/resolve-cache/datasets/iamtarun/python_code_instructions_18k_alpaca/7cae181e29701a8663a07a3ea43c8e105b663ba1/README.md "HTTP/1.1 200 OK"
+2026-01-13 19:56:50,201 - INFO - HTTP Request: HEAD https://huggingface.co/datasets/iamtarun/python_code_instructions_18k_alpaca/resolve/7cae181e29701a8663a07a3ea43c8e105b663ba1/python_code_instructions_18k_alpaca.py "HTTP/1.1 404 Not Found"
+2026-01-13 19:56:51,068 - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/iamtarun/python_code_instructions_18k_alpaca/iamtarun/python_code_instructions_18k_alpaca.py "HTTP/1.1 404 Not Found"
+2026-01-13 19:56:51,469 - INFO - HTTP Request: GET https://huggingface.co/api/datasets/iamtarun/python_code_instructions_18k_alpaca/revision/7cae181e29701a8663a07a3ea43c8e105b663ba1 "HTTP/1.1 200 OK"
+2026-01-13 19:56:51,785 - INFO - HTTP Request: HEAD https://huggingface.co/datasets/iamtarun/python_code_instructions_18k_alpaca/resolve/7cae181e29701a8663a07a3ea43c8e105b663ba1/.huggingface.yaml "HTTP/1.1 404 Not Found"
+2026-01-13 19:56:52,238 - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=iamtarun/python_code_instructions_18k_alpaca "HTTP/1.1 200 OK"
+2026-01-13 19:56:52,577 - INFO - HTTP Request: GET https://huggingface.co/api/datasets/iamtarun/python_code_instructions_18k_alpaca/tree/7cae181e29701a8663a07a3ea43c8e105b663ba1/data?recursive=true&expand=false "HTTP/1.1 200 OK"
+2026-01-13 19:56:52,928 - INFO - HTTP Request: GET https://huggingface.co/api/datasets/iamtarun/python_code_instructions_18k_alpaca/tree/7cae181e29701a8663a07a3ea43c8e105b663ba1?recursive=false&expand=false "HTTP/1.1 200 OK"
+2026-01-13 19:56:53,304 - INFO - HTTP Request: HEAD https://huggingface.co/datasets/iamtarun/python_code_instructions_18k_alpaca/resolve/7cae181e29701a8663a07a3ea43c8e105b663ba1/dataset_infos.json "HTTP/1.1 404 Not Found"
+2026-01-13 19:56:54,298 - INFO - HTTP Request: GET https://huggingface.co/datasets/iamtarun/python_code_instructions_18k_alpaca/resolve/7cae181e29701a8663a07a3ea43c8e105b663ba1/data/train-00000-of-00001-8b6e212f3e1ece96.parquet "HTTP/1.1 302 Found"
+2026-01-13 19:56:54,860 - INFO - HTTP Request: GET https://cas-bridge.xethub.hf.co/xet-bridge-us/64be50954b4ff0d509698f72/9f1a2d5e36553117495f91f7423cec2dc354a54a04e37062218081865375f28f?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=cas%2F20260113%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260113T142602Z&X-Amz-Expires=3600&X-Amz-Signature=26dbc8953a2ecad2035c9f1450826a539b173f732875b4adde0b76ae0f36d498&X-Amz-SignedHeaders=host&X-Xet-Cas-Uid=public&response-content-disposition=inline%3B+filename*%3DUTF-8%27%27train-00000-of-00001-8b6e212f3e1ece96.parquet%3B+filename%3D%22train-00000-of-00001-8b6e212f3e1ece96.parquet%22%3B&x-id=GetObject&Expires=1768317962&Policy=eyJTdGF0ZW1lbnQiOlt7IkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2ODMxNzk2Mn19LCJSZXNvdXJjZSI6Imh0dHBzOi8vY2FzLWJyaWRnZS54ZXRodWIuaGYuY28veGV0LWJyaWRnZS11cy82NGJlNTA5NTRiNGZmMGQ1MDk2OThmNzIvOWYxYTJkNWUzNjU1MzExNzQ5NWY5MWY3NDIzY2VjMmRjMzU0YTU0YTA0ZTM3MDYyMjE4MDgxODY1Mzc1ZjI4ZioifV19&Signature=s2oiwwF3KOnqrC0hh%7ETAkNlAKYs79NBQ9yzdY4CDHOzYlrL4vFCLZzWxjcD7z2y67i4ziJ1IDsep5J%7E91XjfizqyZHER4SBQDauNMb1lTa3ja9gaLxyR3k-9KSmPFxgKTF7RF%7EvSDyCTWvp%7EReJN%7E6ZlvCcCPbageGuZEApN9ndAYGPTCDKEM1Bn8Dj1mrzhUInKoL45mrD9NKj3Y-z1858AYtNrk6b6R8NkK95xpZXG58IT8snwHw1b0vZh-ITUvEHibGoItGc9Q261QFI0zd%7Eh7Bdg5uqiXOPpTUBpSKCoq%7EpJkenigYhdbMpVaVMTVkwSnQBQsbWpNSI%7Es3NHDQ__&Key-Pair-Id=K2L8F4GPSG1IFC "HTTP/1.1 206 Partial Content"
+2026-01-13 19:56:55,661 - INFO - HTTP Request: GET https://huggingface.co/datasets/iamtarun/python_code_instructions_18k_alpaca/resolve/7cae181e29701a8663a07a3ea43c8e105b663ba1/data/train-00000-of-00001-8b6e212f3e1ece96.parquet "HTTP/1.1 302 Found"
+2026-01-13 19:56:55,701 - INFO - HTTP Request: GET https://cas-bridge.xethub.hf.co/xet-bridge-us/64be50954b4ff0d509698f72/9f1a2d5e36553117495f91f7423cec2dc354a54a04e37062218081865375f28f?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=cas%2F20260113%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260113T142603Z&X-Amz-Expires=3600&X-Amz-Signature=671ede60a59e81fd1dcacf10b1a18b0b2712ed317e42d573e73efe1bf1506e67&X-Amz-SignedHeaders=host&X-Xet-Cas-Uid=public&response-content-disposition=inline%3B+filename*%3DUTF-8%27%27train-00000-of-00001-8b6e212f3e1ece96.parquet%3B+filename%3D%22train-00000-of-00001-8b6e212f3e1ece96.parquet%22%3B&x-id=GetObject&Expires=1768317963&Policy=eyJTdGF0ZW1lbnQiOlt7IkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2ODMxNzk2M319LCJSZXNvdXJjZSI6Imh0dHBzOi8vY2FzLWJyaWRnZS54ZXRodWIuaGYuY28veGV0LWJyaWRnZS11cy82NGJlNTA5NTRiNGZmMGQ1MDk2OThmNzIvOWYxYTJkNWUzNjU1MzExNzQ5NWY5MWY3NDIzY2VjMmRjMzU0YTU0YTA0ZTM3MDYyMjE4MDgxODY1Mzc1ZjI4ZioifV19&Signature=DsrE9v-BIRrcSBt7NCHAXFEL-xP0jQHWfbLqSYR-CdDiUPCzpByC2Ov2u2-0bqqN1T07FFL4fBZ2wBIY98ByCa4N-be-am8M9gpAK5sxlg5EUUHdYJmK34VdzHn0rqmfm9%7E0j1ja8kZvLy4zw1G-puTaqBDpxJ81RuVwcGrW5HYbNu3Z5%7EUUH-lgVDeOFXYMmP%7EvDCqHSf%7Eziuls5Ziqzc2ToNgi2TIEv7uGxbpOsNFpEmrq7YCSOIaHl61W%7E5GR3ygUd1u6iQ9Z-A3elh1FIWtuZlmb7rPJ5lgfOVVTV%7ExO5m5pzCMNhyMurylMsRks6yoO4-B4hSkMz6iNFjxxXg__&Key-Pair-Id=K2L8F4GPSG1IFC "HTTP/1.1 206 Partial Content"
+2026-01-13 19:58:28,818 - INFO -   iamtarun/python_code_instructions_18k_alpaca: 5,000/18,000 samples loaded...
+2026-01-13 19:59:56,498 - INFO -   iamtarun/python_code_instructions_18k_alpaca: 10,000/18,000 samples loaded...
+2026-01-13 20:02:06,876 - INFO -   iamtarun/python_code_instructions_18k_alpaca: 15,000/18,000 samples loaded...
+2026-01-13 20:03:42,312 - INFO -   Completed: 18,000 samples from iamtarun/python_code_instructions_18k_alpaca
+2026-01-13 20:03:42,333 - INFO - 
+2026-01-13 20:03:42,334 - INFO - [3/8] Processing: m-a-p/CodeFeedback-Filtered-Instruction
+2026-01-13 20:03:42,335 - INFO - Loading: m-a-p/CodeFeedback-Filtered-Instruction (Code feedback and instruction pairs)
+2026-01-13 20:03:42,335 - INFO -   Target samples: 15,000
+2026-01-13 20:03:43,196 - INFO - HTTP Request: HEAD https://huggingface.co/datasets/m-a-p/CodeFeedback-Filtered-Instruction/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+2026-01-13 20:03:43,261 - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/m-a-p/CodeFeedback-Filtered-Instruction/a08c213a9748c66c15d0225814be80a2e77adf4a/README.md "HTTP/1.1 200 OK"
+2026-01-13 20:03:43,399 - INFO - HTTP Request: GET https://huggingface.co/api/resolve-cache/datasets/m-a-p/CodeFeedback-Filtered-Instruction/a08c213a9748c66c15d0225814be80a2e77adf4a/README.md "HTTP/1.1 200 OK"
+2026-01-13 20:03:43,740 - INFO - HTTP Request: HEAD https://huggingface.co/datasets/m-a-p/CodeFeedback-Filtered-Instruction/resolve/a08c213a9748c66c15d0225814be80a2e77adf4a/CodeFeedback-Filtered-Instruction.py "HTTP/1.1 404 Not Found"
+2026-01-13 20:03:44,635 - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/m-a-p/CodeFeedback-Filtered-Instruction/m-a-p/CodeFeedback-Filtered-Instruction.py "HTTP/1.1 404 Not Found"
+2026-01-13 20:03:45,104 - INFO - HTTP Request: GET https://huggingface.co/api/datasets/m-a-p/CodeFeedback-Filtered-Instruction/revision/a08c213a9748c66c15d0225814be80a2e77adf4a "HTTP/1.1 200 OK"
+2026-01-13 20:03:45,544 - INFO - HTTP Request: HEAD https://huggingface.co/datasets/m-a-p/CodeFeedback-Filtered-Instruction/resolve/a08c213a9748c66c15d0225814be80a2e77adf4a/.huggingface.yaml "HTTP/1.1 404 Not Found"
+2026-01-13 20:03:46,035 - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=m-a-p/CodeFeedback-Filtered-Instruction "HTTP/1.1 200 OK"
+2026-01-13 20:03:46,414 - INFO - HTTP Request: GET https://huggingface.co/api/datasets/m-a-p/CodeFeedback-Filtered-Instruction/tree/a08c213a9748c66c15d0225814be80a2e77adf4a/data?recursive=true&expand=false "HTTP/1.1 404 Not Found"
+2026-01-13 20:03:46,858 - INFO - HTTP Request: GET https://huggingface.co/api/datasets/m-a-p/CodeFeedback-Filtered-Instruction/tree/a08c213a9748c66c15d0225814be80a2e77adf4a?recursive=false&expand=false "HTTP/1.1 200 OK"
+2026-01-13 20:03:47,826 - INFO - HTTP Request: HEAD https://huggingface.co/datasets/m-a-p/CodeFeedback-Filtered-Instruction/resolve/a08c213a9748c66c15d0225814be80a2e77adf4a/dataset_infos.json "HTTP/1.1 404 Not Found"
+2026-01-13 20:03:48,252 - INFO - HTTP Request: GET https://huggingface.co/datasets/m-a-p/CodeFeedback-Filtered-Instruction/resolve/a08c213a9748c66c15d0225814be80a2e77adf4a/CodeFeedback-Filtered-Instruction.jsonl "HTTP/1.1 302 Found"
+2026-01-13 20:03:48,364 - INFO - HTTP Request: GET https://cas-bridge.xethub.hf.co/xet-bridge-us/65dc40eef386d08eb03ff8fd/b90c018d65505d4d107fe7a614378e689636e437535486ae0b8795095803b40b?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=cas%2F20260113%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260113T143256Z&X-Amz-Expires=3600&X-Amz-Signature=a3156f41c0021aa4f92cee6313b7f2ac04cc8624b0553308574be23c267c3f5a&X-Amz-SignedHeaders=host&X-Xet-Cas-Uid=public&response-content-disposition=inline%3B+filename*%3DUTF-8%27%27CodeFeedback-Filtered-Instruction.jsonl%3B+filename%3D%22CodeFeedback-Filtered-Instruction.jsonl%22%3B&x-id=GetObject&Expires=1768318376&Policy=eyJTdGF0ZW1lbnQiOlt7IkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2ODMxODM3Nn19LCJSZXNvdXJjZSI6Imh0dHBzOi8vY2FzLWJyaWRnZS54ZXRodWIuaGYuY28veGV0LWJyaWRnZS11cy82NWRjNDBlZWYzODZkMDhlYjAzZmY4ZmQvYjkwYzAxOGQ2NTUwNWQ0ZDEwN2ZlN2E2MTQzNzhlNjg5NjM2ZTQzNzUzNTQ4NmFlMGI4Nzk1MDk1ODAzYjQwYioifV19&Signature=jS2K2Q6L73VcBkv4moqcDCBUz%7ETUt0kFwyP4gaB9oef68L-Et9mvgDU5GvgcqwIrKNsfY2qRhrwFp79XMy%7EzZkqSB8N9nfdOFqnWt4KEKouI1F4afY64xb8qiAMj5kvYlHKWqC-gncAOq7WD2mDrlN0tA2xvU4Y03o7ELyiqNYyOIpkLeAF5loNnT0ifKg8NYI5a2oyu10Nk%7ETl1oyoDoDvrRjn6%7E6YOeHs3ThCQ6nOlF7MKZuJhpQPcTXz-1M-FGN-cdJGs4A-1OLgZgJADtLRHhU7tkgjIr3fvyX96NIN%7E9qhqQKBE0ApPtPUXLQ0T2KE3KHVXUW-1Y9tj2UI7gg__&Key-Pair-Id=K2L8F4GPSG1IFC "HTTP/1.1 206 Partial Content"

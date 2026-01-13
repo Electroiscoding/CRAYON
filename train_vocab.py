@@ -1,15 +1,11 @@
 """
-Train Vocabulary from Local Resources.
+Train Vocabulary - FULL GRAD DATASET ONLY.
 
-Uses local files from src/crayon/resources/:
-- input.txt (Shakespeare)
-- data.csv (RainDrop-DTS)
-- physics_detailed_dataset_700_rows.csv (Physics)
-- graduate_math.jsonl (GRAD - limited to first 500 entries for speed)
+Source: src/crayon/resources/graduate_math.jsonl
+Mode: Full dataset (Questions + Solutions)
 """
 
 import os
-import csv
 import json
 import time
 import logging
@@ -22,66 +18,36 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
 # Resource directory
 RESOURCE_DIR = Path(__file__).parent / "src" / "crayon" / "resources"
+GRAD_PATH = RESOURCE_DIR / "graduate_math.jsonl"
 
-# Limit GRAD entries (the file is 18MB and very slow)
-MAX_GRAD_ENTRIES = 500
+def yield_grad_only():
+    """Yields text ONLY from the full GRAD dataset."""
+    
+    if not GRAD_PATH.exists():
+        print(f"[ERROR] file not found: {GRAD_PATH}")
+        return
 
+    print(f"[INFO] Streaming FULL GRAD dataset: {GRAD_PATH}")
+    filesize = GRAD_PATH.stat().st_size
+    print(f"[INFO] File Size: {filesize / 1024 / 1024:.2f} MB")
 
-def yield_local_corpus():
-    """Yields text from all local resource files."""
-    
-    # 1. Shakespeare (input.txt)
-    shakespeare_path = RESOURCE_DIR / "input.txt"
-    if shakespeare_path.exists():
-        print(f"[INFO] Loading Shakespeare from {shakespeare_path}")
-        with open(shakespeare_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    yield line.strip()
-    
-    # 2. RainDrop-DTS (data.csv)
-    raindrop_path = RESOURCE_DIR / "data.csv"
-    if raindrop_path.exists():
-        print(f"[INFO] Loading RainDrop-DTS from {raindrop_path}")
-        with open(raindrop_path, 'r', encoding='utf-8', errors='ignore') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if 'text' in row and row['text']:
-                    yield row['text']
-    
-    # 3. Physics dataset
-    physics_path = RESOURCE_DIR / "physics_detailed_dataset_700_rows.csv"
-    if physics_path.exists():
-        print(f"[INFO] Loading Physics from {physics_path}")
-        with open(physics_path, 'r', encoding='utf-8', errors='ignore') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                for col in ['Question', 'Answer', 'Reasoning']:
-                    if col in row and row[col]:
-                        yield row[col]
-    
-    # 4. GRAD (graduate_math.jsonl) - LIMITED for speed
-    grad_path = RESOURCE_DIR / "graduate_math.jsonl"
-    if grad_path.exists():
-        print(f"[INFO] Loading GRAD from {grad_path} (first {MAX_GRAD_ENTRIES} entries)")
-        count = 0
-        with open(grad_path, 'r', encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                if count >= MAX_GRAD_ENTRIES:
-                    break
-                if line.strip():
-                    try:
-                        data = json.loads(line)
-                        if 'question' in data:
-                            yield data['question']
-                            count += 1
-                        if 'solution' in data and count < MAX_GRAD_ENTRIES:
-                            # Take only first 500 chars of solution to avoid very long entries
-                            solution = data['solution'][:500] if len(data['solution']) > 500 else data['solution']
-                            yield solution
-                    except json.JSONDecodeError:
-                        continue
-        print(f"[INFO] Loaded {count} GRAD entries")
+    count = 0
+    with open(GRAD_PATH, 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            if line.strip():
+                try:
+                    data = json.loads(line)
+                    # Yield both question and solution for maximum math/logic coverage
+                    if 'question' in data:
+                        yield data['question']
+                    if 'solution' in data:
+                        yield data['solution']
+                    count += 1
+                    if count % 1000 == 0:
+                        print(f"      ... loaded {count} entries", end='\r')
+                except json.JSONDecodeError:
+                    continue
+    print(f"\n[INFO] Finished loading {count} entries.")
 
 
 def progress_callback(msg: str):
@@ -90,19 +56,18 @@ def progress_callback(msg: str):
 
 def main():
     print("=" * 60)
-    print("XERV Crayon Vocabulary Training (Local Resources)")
+    print("XERV Crayon Training: FULL GRAD DATASET")
     print("=" * 60)
-    
-    print(f"\nResource directory: {RESOURCE_DIR}")
-    print("\nDatasets:")
-    for f in RESOURCE_DIR.iterdir():
-        print(f"  - {f.name} ({f.stat().st_size / 1024:.1f} KB)")
-    print()
     
     start_time = time.time()
     
     # Build vocabulary from local corpus
-    corpus_iter = yield_local_corpus()
+    corpus_iter = yield_grad_only()
+    
+    # Train vocabulary
+    # We use a slightly smaller vocab size (32k) for strictly math/specialized domains 
+    # to avoid overfitting noise, or keep 50k if the user wants "max capacity".
+    # Defaulting to 50k as per previous.
     tokens = train_vocabulary(
         corpus_iter,
         target_size=50000,
@@ -114,36 +79,21 @@ def main():
     print(f"\n[DONE] Vocabulary built in {elapsed:.1f}s")
     print(f"       Token count: {len(tokens)}")
     
-    # Create CrayonVocab with the tokens
+    # Create CrayonVocab
     vocab = CrayonVocab(tokens)
     print(f"       C-Extension: {'Enabled' if vocab._c_ext_available else 'Disabled'}")
     
-    # Save vocabulary
+    # Save
     vocab.save("trained_vocab.json", format="json")
     vocab.save("trained_vocab.txt", format="txt")
     print(f"\n[SAVED] trained_vocab.json")
-    print(f"[SAVED] trained_vocab.txt")
     
-    # Test it
-    print("\n" + "=" * 60)
-    print("Testing Trained Vocabulary")
-    print("=" * 60)
-    
-    test_texts = [
-        "delhi is the capital of india",
-        "The quick brown fox jumps over the lazy dog",
-        "What is the derivative of x squared?",
-        "Calculate the force using F = ma",
-    ]
-    
-    for text in test_texts:
-        tokens = vocab.tokenize(text)
-        decoded = vocab.decode(tokens)
-        unk_count = tokens.count(vocab.unk_token_id)
-        print(f"\nInput:   '{text}'")
-        print(f"Tokens:  {len(tokens)} total, {unk_count} unknown")
-        print(f"Decoded: '{decoded}'")
-
+    # Verify on a math-heavy string
+    test_str = "Calculate the integral of e^x from 0 to infinity."
+    tokens = vocab.tokenize(test_str)
+    print(f"\n[TEST]: '{test_str}'")
+    print(f"Tokens: {tokens}")
+    print(f"Decode: '{vocab.decode(tokens)}'")
 
 if __name__ == "__main__":
     main()
