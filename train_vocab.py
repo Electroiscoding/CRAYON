@@ -5,7 +5,7 @@ Uses local files from src/crayon/resources/:
 - input.txt (Shakespeare)
 - data.csv (RainDrop-DTS)
 - physics_detailed_dataset_700_rows.csv (Physics)
-- graduate_math.jsonl (GRAD)
+- graduate_math.jsonl (GRAD - limited to first 500 entries for speed)
 """
 
 import os
@@ -22,6 +22,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
 # Resource directory
 RESOURCE_DIR = Path(__file__).parent / "src" / "crayon" / "resources"
+
+# Limit GRAD entries (the file is 18MB and very slow)
+MAX_GRAD_ENTRIES = 500
 
 
 def yield_local_corpus():
@@ -57,21 +60,28 @@ def yield_local_corpus():
                     if col in row and row[col]:
                         yield row[col]
     
-    # 4. GRAD (graduate_math.jsonl)
+    # 4. GRAD (graduate_math.jsonl) - LIMITED for speed
     grad_path = RESOURCE_DIR / "graduate_math.jsonl"
     if grad_path.exists():
-        print(f"[INFO] Loading GRAD from {grad_path}")
+        print(f"[INFO] Loading GRAD from {grad_path} (first {MAX_GRAD_ENTRIES} entries)")
+        count = 0
         with open(grad_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
+                if count >= MAX_GRAD_ENTRIES:
+                    break
                 if line.strip():
                     try:
                         data = json.loads(line)
                         if 'question' in data:
                             yield data['question']
-                        if 'solution' in data:
-                            yield data['solution']
+                            count += 1
+                        if 'solution' in data and count < MAX_GRAD_ENTRIES:
+                            # Take only first 500 chars of solution to avoid very long entries
+                            solution = data['solution'][:500] if len(data['solution']) > 500 else data['solution']
+                            yield solution
                     except json.JSONDecodeError:
                         continue
+        print(f"[INFO] Loaded {count} GRAD entries")
 
 
 def progress_callback(msg: str):
