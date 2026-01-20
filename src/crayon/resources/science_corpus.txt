@@ -1,0 +1,27 @@
+
+# Science Corpus (Sample)
+# Math
+The quadratic formula is x = (-b +/- sqrt(b^2 - 4ac)) / 2a
+The integral of e^x is e^x + C.
+Euler's identity: e^(i*pi) + 1 = 0
+The derivative of sin(x) is cos(x).
+\int_{0}^{\infty} x^2 e^{-x} dx = 2!
+f(x) = \sum_{n=0}^{\infty} \frac{f^{(n)}(a)}{n!} (x-a)^n
+# Physics
+Newton's Second Law: F = ma
+Einstein's Mass-Energy Equivalence: E = mc^2
+Schrodinger Equation: i\hbar \frac{\partial}{\partial t} \Psi = \hat{H} \Psi
+Maxwell's Equations describe electromagnetism.
+Thermodynamics: The entropy of an isolated system never decreases.
+# Chemistry
+H2O is water. C6H12O6 is glucose.
+PV = nRT (Ideal Gas Law)
+pH = -log[H+]
+Oxidation involves the loss of electrons.
+# Biology
+DNA is composed of Adenine, Cytosine, Guanine, and Thymine.
+Photosynthesis converts light energy into chemical energy.
+Mitosis is the process of cell division.
+The mitochondria is the powerhouse of the cell.
+Are you ready to calculate the trajectory? 
+Hypothesis testing leads to scientific theories.

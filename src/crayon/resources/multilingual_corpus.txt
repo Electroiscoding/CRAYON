@@ -1,0 +1,34 @@
+
+# Multilingual Corpus (Sample)
+# French
+Bonjour tout le monde. Je suis un étudiant.
+La vie est belle en France.
+Merci beaucoup pour votre aide.
+# Spanish
+Hola, ¿cómo estás? Me llamo Juan.
+El perro corre en el parque.
+Muchas gracias por la comida.
+# German
+Guten Tag! Wie geht es Ihnen?
+Das Wetter ist heute sehr schön.
+Ich liebe Programmieren.
+# Chinese
+你好！很高兴见到你。
+这是一个测试句子。
+中国有着悠久的历史。
+# Japanese
+こんにちは。お元気ですか？
+猫が好きです。
+日本語を勉強しています。
+# Hindi
+नमस्ते! आप कैसे हैं?
+भारत एक विशाल देश है।
+मुझे संगीत पसंद है।
+# Italian
+Ciao! Come stai?
+La pizza è deliziosa.
+Arrivederci e buona giornata.
+# Portuguese
+Olá! Tudo bem com você?
+O Brasil é famoso pelo futebol.
+Obrigado por tudo.

@@ -1,330 +1,218 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
-#include "trie_node.h"
-#include "simd_ops.h"
 
 // ----------------------------------------------------------------------------
-// Builder Structures (Intermediate, non-aligned for construction)
+// Double-Array Trie State (Global / Per Capsule)
 // ----------------------------------------------------------------------------
 
-typedef struct BuilderNode {
-    int32_t token_id;
-    uint8_t key;
-    struct BuilderNode* first_child;
-    struct BuilderNode* next_sibling;
-} BuilderNode;
+typedef struct {
+    int32_t* base;
+    int32_t* check;
+    int32_t* terminals;
+    int32_t size;
+    void* memory_block; // Pointer to full block to free
+} DATModel;
 
-static BuilderNode* create_builder_node(uint8_t key) {
-    BuilderNode* node = (BuilderNode*)malloc(sizeof(BuilderNode));
-    if (node) {
-        node->token_id = -1;
-        node->key = key;
-        node->first_child = NULL;
-        node->next_sibling = NULL;
-    }
-    return node;
-}
-
-static void free_builder_node(BuilderNode* node) {
-    if (!node) return;
-    free_builder_node(node->first_child);
-    free_builder_node(node->next_sibling);
-    free(node);
-}
-
-// ----------------------------------------------------------------------------
-// Trie Memory Management
-// ----------------------------------------------------------------------------
-
-/**
- * @brief Recursively frees the TrieNode structure contents.
- */
-static void free_trie_node_contents(TrieNode* node) {
-    if (!node) return;
-
-    if (node->child_count > 0 && node->children) {
-        for (uint16_t i = 0; i < node->child_count; i++) {
-            // Recurse to free grandchildren arrays
-            free_trie_node_contents(&node->children[i]);
+static void dat_capsule_cleanup(PyObject* capsule) {
+    DATModel* model = (DATModel*)PyCapsule_GetPointer(capsule, "crayon_dat");
+    if (model) {
+        if (model->memory_block) {
+            free(model->memory_block);
         }
-        // Free aligned arrays - use our aligned free
-        free_trie_node_array(node->children);
-        free(node->child_chars);
-        node->children = NULL;
-        node->child_chars = NULL;
-    }
-}
-
-static void capsule_cleanup(PyObject* capsule) {
-    TrieNode* root = (TrieNode*)PyCapsule_GetPointer(capsule, "crayon_trie_root");
-    if (root) {
-        free_trie_node_contents(root);
-        // Free the root itself (allocated with aligned_alloc_64)
-        aligned_free_64(root);
+        free(model);
     }
 }
 
 // ----------------------------------------------------------------------------
-// Builder Logic - Populate TrieNode from BuilderNode with ALIGNED allocation
+// Load DAT File (.dat) - Zero-Copyish (Single Read)
 // ----------------------------------------------------------------------------
 
-static int populate_trie_node(TrieNode* t_node, BuilderNode* b_node) {
-    // Clear to zeros
-    memset(t_node, 0, sizeof(TrieNode));
-    t_node->token_id = b_node->token_id;
-    t_node->child_bitmap = 0;
-    
-    // Count children
-    int count = 0;
-    BuilderNode* curr = b_node->first_child;
-    while (curr) { count++; curr = curr->next_sibling; }
-    t_node->child_count = (uint16_t)count;
+static PyObject* load_dat_file(PyObject* self, PyObject* args) {
+    const char* path;
+    if (!PyArg_ParseTuple(args, "s", &path)) return NULL;
 
-    if (count > 0) {
-        // Allocate ALIGNED Children Array (CRITICAL for cache line optimization)
-        t_node->children = alloc_trie_node_array(count);
-        if (!t_node->children) return -1;
-        
-        // Allocate Char Array (Padding for SIMD over-read safety - round up to 32)
-        int char_pad = (count + 31) & ~31;
-        t_node->child_chars = (uint8_t*)calloc(char_pad, sizeof(uint8_t));
-        if (!t_node->child_chars) {
-            free_trie_node_array(t_node->children);
-            t_node->children = NULL;
-            return -1;
-        }
-
-        // Sort children by key for binary search (required for SIMD masking)
-        // First collect into arrays
-        BuilderNode** child_ptrs = (BuilderNode**)malloc(count * sizeof(BuilderNode*));
-        if (!child_ptrs) {
-            free_trie_node_array(t_node->children);
-            free(t_node->child_chars);
-            return -1;
-        }
-        
-        curr = b_node->first_child;
-        for (int i = 0; i < count; i++) {
-            child_ptrs[i] = curr;
-            curr = curr->next_sibling;
-        }
-        
-        // Sort by key (simple insertion sort for small arrays)
-        for (int i = 1; i < count; i++) {
-            BuilderNode* key_node = child_ptrs[i];
-            int j = i - 1;
-            while (j >= 0 && child_ptrs[j]->key > key_node->key) {
-                child_ptrs[j + 1] = child_ptrs[j];
-                j--;
-            }
-            child_ptrs[j + 1] = key_node;
-        }
-
-        // Populate in sorted order
-        for (int i = 0; i < count; i++) {
-            BuilderNode* child_b = child_ptrs[i];
-            t_node->child_chars[i] = child_b->key;
-            
-            // Set bitmap bit for O(1) existence check (ASCII only)
-            if (child_b->key < 64) {
-                t_node->child_bitmap |= (1ULL << child_b->key);
-            }
-            
-            // Recurse to populate child (in aligned array)
-            if (populate_trie_node(&t_node->children[i], child_b) != 0) {
-                free(child_ptrs);
-                return -1;
-            }
-        }
-        
-        free(child_ptrs);
-    }
-    return 0;
-}
-
-// ----------------------------------------------------------------------------
-// Python Method: build_trie
-// ----------------------------------------------------------------------------
-
-static PyObject* crayon_build_trie(PyObject* self, PyObject* args) {
-    PyObject* token_list;
-    if (!PyArg_ParseTuple(args, "O", &token_list)) return NULL;
-    if (!PyList_Check(token_list)) {
-        PyErr_SetString(PyExc_TypeError, "Expected a list of strings");
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        PyErr_SetString(PyExc_IOError, "Cannot open DAT file");
         return NULL;
     }
 
-    // 1. Build Intermediate Tree (linked-list based for easy construction)
-    BuilderNode* root_b = create_builder_node(0);
-    if (!root_b) {
+    // Header Check
+    char magic[4];
+    uint32_t version;
+    uint32_t size;
+    
+    if (fread(magic, 1, 4, f) != 4 || 
+        fread(&version, 4, 1, f) != 1 || 
+        fread(&size, 4, 1, f) != 1) {
+        fclose(f);
+        PyErr_SetString(PyExc_ValueError, "Invalid DAT header");
+        return NULL;
+    }
+
+    if (memcmp(magic, "CRYN", 4) != 0) {
+        fclose(f);
+        PyErr_SetString(PyExc_ValueError, "Invalid Magic Bytes");
+        return NULL;
+    }
+
+    // Allocate memory for the 3 arrays
+    // Layout: [BASE: size*4] [CHECK: size*4] [TERM: size*4]
+    size_t array_bytes = size * sizeof(int32_t);
+    size_t total_bytes = array_bytes * 3;
+    
+    void* block = malloc(total_bytes);
+    if (!block) {
+        fclose(f);
         PyErr_NoMemory();
+        return NULL;
+    }
+
+    if (fread(block, 1, total_bytes, f) != total_bytes) {
+        free(block);
+        fclose(f);
+        PyErr_SetString(PyExc_IOError, "Unexpected EOF reading DAT body");
         return NULL;
     }
     
-    Py_ssize_t num_tokens = PyList_Size(token_list);
+    fclose(f);
 
-    for (Py_ssize_t i = 0; i < num_tokens; i++) {
-        PyObject* item = PyList_GetItem(token_list, i);
-        const char* token = PyUnicode_AsUTF8(item);
-        if (!token) { 
-            free_builder_node(root_b); 
-            return NULL; 
-        }
-
-        // Skip empty tokens
-        if (*token == '\0') continue;
-
-        BuilderNode* curr = root_b;
-        for (const char* c = token; *c; c++) {
-            uint8_t key = (uint8_t)*c;
-            
-            // Find existing child
-            BuilderNode* child = curr->first_child;
-            BuilderNode* prev = NULL;
-            while (child && child->key != key) {
-                prev = child;
-                child = child->next_sibling;
-            }
-
-            if (!child) {
-                // Create new child
-                child = create_builder_node(key);
-                if (!child) {
-                    free_builder_node(root_b);
-                    PyErr_NoMemory();
-                    return NULL;
-                }
-                if (prev) prev->next_sibling = child;
-                else curr->first_child = child;
-            }
-            curr = child;
-        }
-        // Mark end of token
-        curr->token_id = (int32_t)i;
-    }
-
-    // 2. Allocate the Root (64-byte aligned)
-    TrieNode* root_t = alloc_trie_node();
-    if (!root_t) {
-        free_builder_node(root_b);
+    // Setup Model Struct
+    DATModel* model = (DATModel*)malloc(sizeof(DATModel));
+    if (!model) {
+        free(block);
         PyErr_NoMemory();
         return NULL;
     }
 
-    // 3. Populate the optimized trie from builder
-    if (populate_trie_node(root_t, root_b) != 0) {
-        free_builder_node(root_b);
-        aligned_free_64(root_t);
-        PyErr_NoMemory();
-        return NULL;
-    }
+    model->memory_block = block;
+    model->size = (int32_t)size;
+    
+    // Assign pointers
+    char* ptr = (char*)block;
+    model->base = (int32_t*)ptr;
+    model->check = (int32_t*)(ptr + array_bytes);
+    model->terminals = (int32_t*)(ptr + array_bytes * 2);
 
-    // 4. Cleanup Builder Tree
-    free_builder_node(root_b);
-
-    // 5. Wrap in Capsule with destructor
-    return PyCapsule_New(root_t, "crayon_trie_root", capsule_cleanup);
+    return PyCapsule_New(model, "crayon_dat", dat_capsule_cleanup);
 }
 
 // ----------------------------------------------------------------------------
-// Python Method: crayon_tokenize_fast
+// Fast Tokenization (Double-Array Traversal)
 // ----------------------------------------------------------------------------
 
 static PyObject* crayon_tokenize_fast(PyObject* self, PyObject* args) {
     const char* text;
     Py_ssize_t text_length;
-    PyObject* vocab_obj;
+    PyObject* dat_capsule;
     int unk_token_id;
 
-    if (!PyArg_ParseTuple(args, "s#Oi", &text, &text_length, &vocab_obj, &unk_token_id)) {
+    if (!PyArg_ParseTuple(args, "s#Oi", &text, &text_length, &dat_capsule, &unk_token_id)) {
         return NULL;
     }
 
-    TrieNode* root = (TrieNode*)PyCapsule_GetPointer(vocab_obj, "crayon_trie_root");
-    if (!root) {
-        PyErr_SetString(PyExc_ValueError, "Invalid Trie Capsule");
+    DATModel* model = (DATModel*)PyCapsule_GetPointer(dat_capsule, "crayon_dat");
+    if (!model) {
+        PyErr_SetString(PyExc_ValueError, "Invalid DAT Capsule");
         return NULL;
     }
 
-    // Pre-allocate result list with estimated capacity
-    Py_ssize_t estimated_tokens = text_length / 4 + 1;
+    int32_t* base = model->base;
+    int32_t* check = model->check;
+    int32_t* terminals = model->terminals;
+    int32_t size = model->size;
+
     PyObject* result = PyList_New(0);
     if (!result) return NULL;
-    
-    Py_ssize_t position = 0;
 
-    // Hot Loop Optimization: Pre-create unk token object
     PyObject* py_unk = PyLong_FromLong(unk_token_id);
     if (!py_unk) {
         Py_DECREF(result);
         return NULL;
     }
 
+    Py_ssize_t position = 0;
     while (position < text_length) {
-        int match_length = 0;
-        int32_t token_id = -1;
+        // DAT Traversal
+        // Algorithm:
+        // s = 0 (root)
+        // for c in text:
+        //   t = base[s] + c
+        //   if check[t] == s:
+        //      s = t
+        //      if terminals[s] != -1: match
+        //   else: break
         
-        const TrieNode* curr = root;
-        int curr_len = 0;
-        
-        // Max lookahead or remaining string length
-        Py_ssize_t limit = text_length - position;
-        const char* sub = text + position;
+        int s = 0; // Root state
+        int32_t best_token = -1;
+        int best_len = 0;
 
-        for (Py_ssize_t i = 0; i < limit; i++) {
-            uint8_t target = (uint8_t)sub[i];
+        for (Py_ssize_t i = 0; position + i < text_length; i++) {
+            uint8_t c = (uint8_t)text[position + i];
             
-            // SIMD Child Lookup [cite: 414]
-            int idx = find_child_simd(curr, target);
-            if (idx == -1) break;
-
-            curr = &curr->children[idx];
-            curr_len++;
-
-            // Track longest match
-            if (curr->token_id != -1) {
-                token_id = curr->token_id;
-                match_length = curr_len;
+            // Bounds check not strictly needed if base array logic is standard,
+            // but necessary to prevent OOB read if base[s] is large.
+            // Check if transition is valid
+            if (s >= size) break;
+            
+            int offset = base[s] + c;
+            
+            if (offset >= size || offset < 0) {
+                 break; // Invalid
+            }
+            
+            if (check[offset] != s) {
+                break; // Mismatch
+            }
+            
+            // Move to next state
+            s = offset;
+            
+            // Is it a word end?
+            if (terminals[s] != -1) {
+                best_token = terminals[s];
+                best_len = (int)(i + 1);
             }
         }
 
-        if (match_length > 0) {
-            PyObject* val = PyLong_FromLong(token_id);
+        if (best_len > 0) {
+            PyObject* val = PyLong_FromLong(best_token);
             if (!val) {
-                Py_DECREF(py_unk);
                 Py_DECREF(result);
+                Py_DECREF(py_unk);
                 return NULL;
             }
             PyList_Append(result, val);
             Py_DECREF(val);
-            position += match_length;
+            position += best_len;
         } else {
-            // Unknown character - use pre-created object
+            // UNK
             PyList_Append(result, py_unk);
             position += 1;
         }
     }
-    
+
     Py_DECREF(py_unk);
     return result;
 }
 
 // ----------------------------------------------------------------------------
-// Module Registration
+// Module definition
 // ----------------------------------------------------------------------------
 
 static PyMethodDef CrayonMethods[] = {
-    {"build_trie", crayon_build_trie, METH_VARARGS, "Build SIMD-optimized C-Trie from token list"},
-    {"crayon_tokenize_fast", crayon_tokenize_fast, METH_VARARGS, "SIMD-accelerated tokenization"},
+    {"load_dat_file", load_dat_file, METH_VARARGS, "Load binary DAT file into memory"},
+    {"crayon_tokenize_fast", crayon_tokenize_fast, METH_VARARGS, "Double-Array Trie Inference"},
     {NULL, NULL, 0, NULL}
 };
 
 static struct PyModuleDef crayon_core_module = {
     PyModuleDef_HEAD_INIT,
     "crayon.c_ext._core",
-    "High-Performance Crayon Core with AVX2 SIMD",
+    "High-Performance DAT Engine",
     -1,
     CrayonMethods
 };

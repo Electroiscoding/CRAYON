@@ -1,0 +1,58 @@
+
+# Code Corpus (Sample)
+# Python
+def factorial(n):
+    if n == 0: return 1
+    return n * factorial(n-1)
+
+class NeuralNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fc1 = nn.Linear(784, 128)
+    def forward(self, x):
+        return F.relu(self.fc1(x))
+
+import numpy as np
+import pandas as pd
+import requests
+import json
+import os
+import sys
+
+# Common keywords
+python java rust c++ javascript typescript go ruby php swift
+for while if else elif break continue return yield await async
+class def function var let const struct impl pub fn mut
+true false none null undefined nan infinity
+try except catch finally raise throw
+import from as package crate module
+
+# Rust
+fn main() {
+    println!("Hello, world!");
+    let mut x = 5;
+    let y = &x;
+}
+pub struct Tokenizer {
+    vocab: Vec<String>,
+}
+impl Tokenizer {
+    pub fn new() -> Self { Self { vocab: vec![] } }
+}
+
+# C++
+#include <iostream>
+#include <vector>
+using namespace std;
+int main() {
+    vector<int> v = {1, 2, 3};
+    for (auto i : v) cout << i << endl;
+    return 0;
+}
+// JavaScript
+const fetchData = async () => {
+    const res = await fetch('/api/data');
+    const json = await res.json();
+    console.log(json);
+};
+function add(a, b) { return a + b; }

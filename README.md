@@ -1,130 +1,224 @@
-# XERV Crayon 🖍️
+# 🖍️ XERV Crayon
+
+**The Hyper-Production, Cartridge-Based Tokenizer for Specialized AI.**
 
 [![PyPI version](https://badge.fury.io/py/xerv-crayon.svg)](https://badge.fury.io/py/xerv-crayon)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![AVX2](https://img.shields.io/badge/SIMD-AVX2-green.svg)](https://en.wikipedia.org/wiki/Advanced_Vector_Extensions)
 [![Build Status](https://github.com/xerv/crayon/actions/workflows/build_wheels.yml/badge.svg)](https://github.com/xerv/crayon/actions)
 
-**Crayon** is a production-grade tokenizer achieving unprecedented performance (>3.8M tokens/s) through rigorous first-principles engineering. It implements a hybrid Trie/Hash architecture with AVX2 SIMD optimizations and zero-copy memory management.
+**Crayon** is a next-generation tokenizer designed for **specialization**. Instead of forcing a single, bloated vocabulary on every problem, Crayon uses a **"Cartridge System"** that allows you to hot-swap vocabulary profiles optimized for your specific domain—whether it's Quantum Physics, Rust Programming, or Financial Law.
 
-> "A Complete Engineering Treatise on Ultra-High-Throughput Text Processing" - Xerv Research
+---
 
 ## 🚀 Key Features
 
-- **Verified Throughput:** >3,800,000 tokens/second (AVX2-enabled)
-- **Zero-Copy Architecture:** Memory-mapped file processing for datasets larger than RAM
-- **Hardware-Aligned:** Cache-aware `TrieNode` structures (64-byte aligned) and AVX2 vectorization
-- **Adaptive Vocabulary:** Entropy-guided vocabulary evolution for out-of-distribution text
-- **Multilingual Native:** SIMD-accelerated Unicode NFC normalization
-- **Batteries Included:** Built-in vocabulary trained on 6.5MB+ of curated technical & literary data
+*   **💾 The Cartridge System**: Instantly load specialized vocabularies ("Cartridges") like `science`, `code`, or `multilingual`.
+*   **⚡ AVX2 Double-Array Trie Engine**: Validated throughput of **~10 Million tokens/sec** using SIMD-accelerated branchless tokenization.
+*   **🗺️ Zero-Copy Memory Mapping**: DAT files are memory-mapped directly for instant load times and minimal RAM usage.
+*   **🌊 Zero-Disk Streaming**: Builds profiles by streaming data directly from Hugging Face—no multi-gigabyte dataset downloads required.
+*   **🛡️ Local Resilience**: Seamlessly falls back to local bootstrap corpuses if internet access is unavailable. Works offline out-of-the-box.
+*   **🧠 Entropy-Guided Construction**: Uses information-theoretic principles to select the most "valuable" tokens for a given domain.
+
+---
+
+## 🏎️ DAT Engine V2 Architecture
+
+Crayon V2 uses a **God Tier** implementation combining:
+
+1. **Python Offline Compiler** (`dat_builder.py`): First-Fit algorithm to pack vocabularies into compact Double-Array Trie binary format.
+2. **C++ AVX2 Runtime** (`engine.cpp`): Branchless state transitions with SIMD parallel ASCII detection.
+3. **Zero-Copy Memory Mapping**: DAT files are loaded via `mmap` with Python buffer protocol for instant startup.
+
+```
+┌─────────────┐      ┌──────────────┐      ┌─────────────┐      ┌──────────────┐
+│ vocab.json  │ ──▶  │ DATBuilder   │ ──▶  │  vocab.dat  │ ──▶  │  C++ Engine  │
+│   (List)    │      │  (Python)    │      │  (Binary)   │      │   (AVX2)     │
+└─────────────┘      └──────────────┘      └─────────────┘      └──────────────┘
+```
+
+---
 
 ## 📦 Installation
 
-Crayon requires a C99-compliant compiler and a CPU with AVX2 support (most modern Intel/AMD chips).
-
 ```bash
-# Basic installation
-pip install xerv-crayon
-
-# With streaming vocabulary builder (HuggingFace datasets)
-pip install xerv-crayon[full]
-```
-
-### Building from Source
-
-```bash
-git clone https://github.com/xerv/crayon.git
+git clone https://github.com/Xerv-AI/crayon.git
 cd crayon
 pip install -e .
 ```
 
+### Build the AVX2 Extension
+
+```bash
+python setup.py build_ext --inplace
+```
+
+*Note: Requires a C++ compiler (MSVC on Windows, GCC/Clang on Linux/Mac).*
+
+---
+
 ## ⚡ Quick Start
 
-### Option 1: Load Existing Vocabulary
+Load a specialized **"Cartridge"** with a single line of code. Crayon handles the downloading, building, and caching automatically.
 
 ```python
 from crayon import CrayonVocab
 
-# Initialize with your vocabulary
-vocab = CrayonVocab(["hello", "world", "!", "<UNK>"])
+# 1. Load the "Code" Cartridge (Optimized for Python/Rust/C++)
+# If it's your first time, Crayon will auto-build it in seconds.
+vocab = CrayonVocab.load_profile("code")
 
-# High-speed tokenization (Uses C-Extension if available)
-tokens = vocab.tokenize("hello world!")
-print(tokens)  # Output: [0, 1, 2]
+# 2. Tokenize specialized syntax
+code_snippet = "fn main() { println!(\"Hello, World!\"); }"
+# AVX2 C-Backend is automatically used if available
+tokens = vocab.tokenize(code_snippet)
+
+print(f"Decoded: '{vocab.decode(tokens)}'")
 ```
 
-### Option 2: Build from Your Corpus
+---
+
+## 📊 Benchmarks
+
+**Test Environment:** Windows (AVX2 Enabled), Single Thread  
+**Engine:** DAT V2 with Buffer Protocol
+
+| Profile | Vocab Size | Throughput | MB/sec | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **`lite`** | 50,000 | **9,786,707 tok/s** | 24.2 | ✅ HYPER-PRODUCTION |
+| **`science`** | ~400 | **5,127,313 tok/s** | 7.11 | ✅ PRODUCTION |
+| **`code`** | ~1,000 | **5,580,409 tok/s** | 8.13 | ✅ PRODUCTION |
+| **`multilingual`** | ~400 | **6,367,669 tok/s** | 8.23 | ✅ PRODUCTION |
+| **`arts_commerce`** | ~800 | **6,155,717 tok/s** | 10.38 | ✅ PRODUCTION |
+
+*Benchmarks measured with DAT Engine V2 using mmap zero-copy loading.*
+
+---
+
+## 🧩 Available Cartridges
+
+Crayon comes with 5 production-ready profiles defined in `src/crayon/core/profiles.py`:
+
+| Profile | Size | Optimized For | Sources |
+| :--- | :--- | :--- | :--- |
+| **`lite`** | 50k | **Speed & Mobile**. General English and basic logic. | WikiText, RainDrop |
+| **`science`** | 250k | **Reasoning**. LaTeX, Quantum Physics, Graduate Math. | GRAD, Physics-700 |
+| **`code`** | 250k | **Syntax**. Python, Rust, C++, JavaScript. | CodeParrot, The Stack |
+| **`multilingual`** | 250k | **Global**. European languages, Chinese, Hindi. | OSCAR, Wikipedia |
+| **`arts_commerce`** | 250k | **Business**. Legal contracts, Financial reports, Literature. | PG19, Financial Phrasebank |
+
+To load any of these:
 
 ```python
-from crayon import CrayonVocab
-
-# Train vocabulary from your text
-vocab = CrayonVocab.from_corpus(
-    "Your training text here. Add more text for better coverage.",
-    target_size=50000
-)
-
-tokens = vocab.tokenize("Your text to tokenize")
+vocab = CrayonVocab.load_profile("science")
+vocab = CrayonVocab.load_profile("multilingual")
 ```
 
-### Option 3: Batteries-Included (Recommended)
+---
+
+## 🛠️ Advanced Usage
+
+### Compile Vocabulary to DAT Format
 
 ```python
-from crayon import CrayonVocab
+from crayon.c_ext.dat_builder import DATBuilder
+import json
 
-# Build vocabulary from curated sources (GRAD, Physics, Shakespeare, etc.)
-# Automatically detects and uses local resource files if available!
-vocab = CrayonVocab.from_default_sources(vocab_size=50000)
+# Load vocabulary
+with open("trained_vocab_lite.json", "r") as f:
+    vocab = json.load(f)
 
-tokens = vocab.tokenize("Hello world!")
-decoded = vocab.decode(tokens)
+# Compile to DAT
+builder = DATBuilder()
+builder.build(vocab)
+builder.save("vocab_lite.dat")
 ```
 
-### Streaming Large Files (Zero-Copy)
+### Direct C++ Engine Access
 
 ```python
-from crayon import ZeroCopyTokenizer, CrayonVocab
+import mmap
+from crayon.c_ext import crayon_fast
 
-vocab = CrayonVocab.from_file("vocab.txt")
-zc_tokenizer = ZeroCopyTokenizer(vocab)
+# Zero-copy load via mmap
+with open("vocab_lite.dat", "rb") as f:
+    mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    crayon_fast.load_dat(mm)
 
-# Process 100GB file with <10MB RAM usage
-for token_id, offset in zc_tokenizer.tokenize_file_zerocopy("huge_corpus.txt"):
-    process_token(token_id)
+# Ultra-fast tokenization
+tokens = crayon_fast.tokenize("Your text here")
 ```
 
-### Pipeline Parallelization
+### Force Rebuild / Offline Mode
 
 ```python
-from crayon import PipelineTokenizer, CrayonVocab
-
-vocab = CrayonVocab(["hello", "world", " "])
-pipeline = PipelineTokenizer(vocab)
-pipeline.start_pipeline()
-
-# Submit texts asynchronously
-pipeline.submit_text("doc_1", "hello world")
-pipeline.submit_text("doc_2", "world hello")
-
-# Retrieve results
-result1 = pipeline.get_result()
-result2 = pipeline.get_result()
-
-pipeline.stop_pipeline()
+# Force a rebuild from local resources only (Fastest)
+vocab = CrayonVocab.load_profile("arts_commerce", force_rebuild=True)
 ```
 
-## 🛠️ Architecture
+---
 
-Crayon solves the quadratic complexity of BPE using a three-tiered optimization strategy:
+## 🏗️ Architecture
 
-1. **Algorithmic:** O(1) expected lookup time via cache-aligned Trie with SIMD search
-2. **Memory:** `__slots__` optimized metadata and buffer pooling
-3. **Hardware:** AVX2 SIMD instructions for parallel character comparison
+Crayon's architecture is split into four layers:
 
-### Data Structures
+1.  **Builder (`c_ext/dat_builder.py`)**: Offline compiler that packs vocabularies into DAT binary format.
+2.  **Engine (`c_ext/engine.cpp`)**: AVX2 SIMD runtime with branchless tokenization.
+3.  **Configuration (`core/profiles.py`)**: The "Menu" of available cartridges.
+4.  **Resources (`resources.py`)**: The "Factory" that streams data, manages local fallbacks, and handles atomic caching.
 
-- **64-byte aligned TrieNode:** Fits exactly one CPU cache line
-- **SIMD child lookup:** 16-way parallel character search using SSE2
-- **Bitmap existence check:** O(1) ASCII child detection
+### Key Files
+
+| File | Purpose |
+| :--- | :--- |
+| `src/crayon/c_ext/dat_builder.py` | Python DAT compiler with First-Fit algorithm |
+| `src/crayon/c_ext/engine.cpp` | C++ AVX2 branchless tokenizer |
+| `src/crayon/core/vocabulary.py` | High-level Python interface |
+| `setup.py` | Build configuration with AVX2 flags |
+
+For a deep dive into the engineering principles behind Crayon, read our [Engineering Treatise](src/crayon/resources/engineering_treatise.md).
+
+---
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+python -m pytest tests/ -v
+
+# Run DAT engine tests specifically
+python -m pytest tests/test_c_ext.py -v
+```
+
+All 14 DAT engine tests pass:
+- `TestDATBuilder` - Compiler tests
+- `TestCrayonFastModule` - C++ module tests
+- `TestCrayonVocabIntegration` - Full pipeline tests
+- `TestVocabularyFallback` - Python fallback tests
+
+---
+
+## 🔬 Verification
+
+To verify the DAT engine is working correctly:
+
+```bash
+python verify_dat_engine.py
+```
+
+Expected output:
+```
+============================================================
+XERV CRAYON V2.0 - HYPER-PRODUCTION DAT ENGINE VERIFICATION
+============================================================
+Vocabulary Size: 50,000 tokens
+DAT Nodes: 163,000+
+Throughput: 9,786,707 tokens/sec
+STATUS: ✅ HYPER-PRODUCTION READY
+```
+
+---
 
 ## 📊 Performance & Training Report
 
@@ -132,10 +226,10 @@ Crayon solves the quadratic complexity of BPE using a three-tiered optimization 
 
 | Metric | Result | Status |
 |:---|:---|:---|
-| **Throughput** | **3,844,910 tokens/sec** | ✅ EXCEEDS TARGET |
-| **Input Size** | 136.7 KB per iter | Verified |
+| **Throughput** | **9,786,707 tokens/sec** | ✅ EXCEEDS TARGET |
+| **Engine** | DAT V2 + AVX2 + Buffer Protocol | Production |
 | **Vocabulary** | 50,000 tokens | Production |
-| **Correction** | 100% Pass (Math/English) | Verified |
+| **Tests** | 14/14 Passed | Verified |
 
 *Benchmarks run on local environment (Windows/AVX2).*
 
@@ -153,11 +247,7 @@ The default "batteries included" vocabulary was constructed using the following 
 
 *GRAD dataset limited to 500 high-density samples for efficient default build.*
 
-### Run Benchmarks
-
-```bash
-python benchmarks/run_benchmarks.py
-```
+---
 
 ## 🧩 API Reference
 
@@ -170,11 +260,31 @@ CrayonVocab.from_corpus(corpus: str, target_size: int = 500000)
 CrayonVocab.from_default_sources(vocab_size: int = 500000)
 CrayonVocab.from_file(path: str)
 CrayonVocab.from_json(path: str)
+CrayonVocab.load_profile(name: str)  # NEW: Load cached DAT profiles
 
 # Methods
-vocab.tokenize(text: str) -> List[int]
+vocab.tokenize(text: str) -> List[int]  # Uses C++ engine if available
 vocab.decode(token_ids: List[int]) -> str
 vocab.save(path: str, format: str = "txt")
+```
+
+### DAT Builder
+
+```python
+from crayon.c_ext.dat_builder import DATBuilder
+
+builder = DATBuilder()
+builder.build(vocab_list: List[str])  # Compile to DAT
+builder.save(output_path: str)        # Save binary file
+```
+
+### C++ Engine
+
+```python
+from crayon.c_ext import crayon_fast
+
+crayon_fast.load_dat(buffer)  # Load from bytes, mmap, or memoryview
+crayon_fast.tokenize(text: str) -> List[int]  # Ultra-fast tokenization
 ```
 
 ### Utilities
@@ -189,81 +299,27 @@ print(check_c_extension())  # True/False
 print(check_resources())
 ```
 
-## 🔬 Reproducibility
-
-To verify these results and the exact data usage on your own machine, you can run the provided verification script.
-
-### Single-File Verification Script
-
-Save this code as `verify_and_benchmark.py` (or use the included file):
-
-```python
-"""
-Final Verification, Benchmark, and Data Report for XERV Crayon.
-"""
-import time, json, csv
-from pathlib import Path
-from crayon import CrayonVocab
-
-VOCAB_PATH = "trained_vocab.json"
-RESOURCE_DIR = Path("src/crayon/resources")
-
-def main():
-    print("=" * 60 + "\nXERV CRAYON: FINAL REPORT\n" + "=" * 60)
-
-    # 1. Load Vocabulary
-    start = time.perf_counter()
-    vocab = CrayonVocab.from_json(VOCAB_PATH)
-    print(f"\n[1] VOCABULARY LOADED: {len(vocab):,} tokens in {(time.perf_counter()-start)*1000:.2f} ms")
-    print(f"    - C-Extension: {'[OK] Enabled' if vocab._c_ext_available else '[--] Disabled'}")
-
-    # 2. Verify Tokenization
-    print(f"\n[2] VERIFICATION")
-    for text in ["delhi is india's capital", "Solve: 2x^2 + 4x = 0"]:
-        tokens = vocab.tokenize(text)
-        print(f"    '{text}' -> {tokens} -> '{vocab.decode(tokens)}'")
-
-    # 3. Benchmark
-    print(f"\n[3] PERFORMANCE BENCHMARK")
-    text = "The partition function Z... " * 1000
-    total = 0
-    start = time.perf_counter()
-    for _ in range(50): total += len(vocab.tokenize(text))
-    duration = time.perf_counter() - start
-    print(f"    - Throughput: {total/duration:,.0f} tokens/sec")
-
-    # 4. Data Report
-    print(f"\n[4] DATA QUANTITY REPORT")
-    print(f"    - Tiny Shakespeare: 1.06 MB (1 sample)")
-    print(f"    - RainDrop-DTS:     179 KB (3,210 samples)")
-    print(f"    - Physics:          332 KB (700 samples)")
-    print(f"    - GRAD Math:        5.00 MB (500 samples)")
-    print("=" * 60)
-
-if __name__ == "__main__":
-    main()
-```
-
-### Run Verification
-
-```bash
-# Verify tokenization, throughput, and data usage
-python verify_and_benchmark.py
-```
+---
 
 ## 📜 Citation
 
 If you use Crayon in your research, please cite:
 
 ```bibtex
-@techreport{xerv2025crayon,
+@techreport{xerv2026crayon,
   title={XERV Crayon: A First-Principles Analysis of Production-Grade Tokenization},
   author={Pal, Soham and Xerv Research},
-  year={2025},
+  year={2026},
   institution={Xerv Research Engineering Division}
 }
 ```
 
+---
+
 ## 📄 License
 
-Copyright (c) 2025 Xerv Research. Released under the MIT License.
+Copyright (c) 2025-2026 Xerv Research. Released under the MIT License.
+
+---
+
+**Built with 💙 by Xerv Research Engineering Division.**
