@@ -111,7 +111,24 @@ python compile_profiles.py
 
 **This is a one-time operation** (or whenever vocabularies are updated). Each profile compilation takes 38ms-26s depending on size. See [DAT_BUILDING_EXPLAINED.md](DAT_BUILDING_EXPLAINED.md) for details.
 
+
+### 🚀 Try the Demo
+
+Run the included demo script to verifying everything works:
+
+```bash
+python demo_tokenize.py
+```
+*Expected Output:*
+```
+[1] Loading 'lite' profile...
+    Status: 🚀 Fast C++ DAT Engine
+[2] Tokenizing: 'Hello, world! This is Crayon.'
+    Tokens IDs: [...]
+```
+
 ---
+
 
 
 
