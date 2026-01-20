@@ -1,0 +1,91 @@
+{
+  "date": "2026-01-20T16:54:54.124619",
+  "test_text_bytes": 70000,
+  "iterations": 10,
+  "results": [
+    {
+      "name": "CRAYON (lite, 50k)",
+      "status": "OK",
+      "vocab_size": 50000,
+      "avg_tokens": 27400.0,
+      "load_time_ms": 0.542099995072931,
+      "avg_time_ms": 4.558669991092756,
+      "min_time_ms": 2.6496999780647457,
+      "max_time_ms": 7.916799979284406,
+      "tokens_per_sec": 6010525.011360158,
+      "mb_per_sec": 15.33436891224087
+    },
+    {
+      "name": "tiktoken (cl100k/GPT-4)",
+      "status": "OK",
+      "vocab_size": 100000,
+      "avg_tokens": 16800.0,
+      "load_time_ms": 0.010000017937272787,
+      "avg_time_ms": 32.032399997115135,
+      "min_time_ms": 22.743200010154396,
+      "max_time_ms": 51.5593999880366,
+      "tokens_per_sec": 524468.9752098819,
+      "mb_per_sec": 2.182300651804853
+    },
+    {
+      "name": "tiktoken (p50k/GPT-3)",
+      "status": "OK",
+      "vocab_size": 50000,
+      "avg_tokens": 21000.0,
+      "load_time_ms": 0.004999979864805937,
+      "avg_time_ms": 44.984909996856004,
+      "min_time_ms": 23.19419995183125,
+      "max_time_ms": 73.3283000299707,
+      "tokens_per_sec": 466823.2080817254,
+      "mb_per_sec": 1.5539505891523122
+    },
+    {
+      "name": "HF LLaMA (SP-BPE)",
+      "status": "OK",
+      "vocab_size": 32000,
+      "avg_tokens": 20701.0,
+      "load_time_ms": 1212.0161000057124,
+      "avg_time_ms": 73.5230999882333,
+      "min_time_ms": 67.24860001122579,
+      "max_time_ms": 85.21739998832345,
+      "tokens_per_sec": 281557.76896394475,
+      "mb_per_sec": 0.9507804676865594
+    },
+    {
+      "name": "HF GPT-2 (BPE)",
+      "status": "OK",
+      "vocab_size": 50257,
+      "avg_tokens": 23900.0,
+      "load_time_ms": 2051.1753000319004,
+      "avg_time_ms": 100.79393000924028,
+      "min_time_ms": 84.93449998786673,
+      "max_time_ms": 116.99060001410544,
+      "tokens_per_sec": 237117.45338046615,
+      "mb_per_sec": 0.6935370749624471
+    },
+    {
+      "name": "HF BERT (WordPiece)",
+      "status": "OK",
+      "vocab_size": 30522,
+      "avg_tokens": 19302.0,
+      "load_time_ms": 1603.0963999801315,
+      "avg_time_ms": 95.42736998992041,
+      "min_time_ms": 83.27160001499578,
+      "max_time_ms": 121.42039998434484,
+      "tokens_per_sec": 202269.01361777852,
+      "mb_per_sec": 0.7325395994876713
+    },
+    {
+      "name": "HF T5 (SentencePiece)",
+      "status": "OK",
+      "vocab_size": 32000,
+      "avg_tokens": 19401.0,
+      "load_time_ms": 1727.9140999889933,
+      "avg_time_ms": 102.14915999677032,
+      "min_time_ms": 74.3701999890618,
+      "max_time_ms": 130.69439999526367,
+      "tokens_per_sec": 189928.1403842519,
+      "mb_per_sec": 0.6843358026124572
+    }
+  ]
+}
