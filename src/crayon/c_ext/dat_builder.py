@@ -135,8 +135,6 @@ class DATBuilder:
                 queue.append((child_node, next_dat_idx))
             
             processed_nodes += 1
-            if processed_nodes % 10000 == 0:
-                print(f"Packed {processed_nodes} nodes...", end='\r')
                 
         # Shrink arrays to actual used size to save disk space
         # Find last non-default entry

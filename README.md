@@ -60,39 +60,75 @@ python setup.py build_ext --inplace
 
 ## ⚡ Quick Start
 
-Load a specialized **"Cartridge"** with a single line of code. Crayon handles the downloading, building, and caching automatically.
+### Option 1: Direct DAT Compilation (Fastest to Get Started)
 
 ```python
-from crayon import CrayonVocab
+import json
+import mmap
+from crayon.c_ext.dat_builder import DATBuilder
+from crayon.c_ext import crayon_fast
 
-# 1. Load the "Code" Cartridge (Optimized for Python/Rust/C++)
-# If it's your first time, Crayon will auto-build it in seconds.
-vocab = CrayonVocab.load_profile("code")
+# Load any trained vocabulary (these are in the project root)
+with open("trained_vocab_code.json", "r") as f:
+    vocab_list = json.load(f)
 
-# 2. Tokenize specialized syntax
+# Compile to DAT (one-time, takes a few seconds for small vocabs)
+builder = DATBuilder()
+builder.build(vocab_list)
+builder.save("vocab_code.dat")
+
+# Load into C++ engine via memory mapping (instant, <1ms)
+with open("vocab_code.dat", "rb") as f:
+    mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    crayon_fast.load_dat(mm)
+
+# Ultra-fast tokenization (10M+ tokens/sec)
 code_snippet = "fn main() { println!(\"Hello, World!\"); }"
-# AVX2 C-Backend is automatically used if available
-tokens = vocab.tokenize(code_snippet)
-
-print(f"Decoded: '{vocab.decode(tokens)}'")
+tokens = crayon_fast.tokenize(code_snippet)
+print(f"Tokens: {tokens}")
 ```
+
+### Option 2: Using Profile System (Requires Cached Profiles)
+
+```python
+from crayon.core.vocabulary import CrayonVocab
+
+# If you've run compile_profiles.py and have cached .dat files:
+vocab = CrayonVocab.load_profile("code")
+tokens = vocab.tokenize("fn main() { }")
+decoded = vocab.decode(tokens)
+print(f"Decoded: {decoded}")
+```
+
+### 🔧 One-Time Setup: Compile All Profiles
+
+To use the convenient `load_profile()` API, compile profiles once:
+
+```bash
+# This builds .dat files and caches them to ~/.cache/xerv/crayon/profiles/
+python compile_profiles.py
+```
+
+**This is a one-time operation** (or whenever vocabularies are updated). Each profile compilation takes 38ms-26s depending on size. See [DAT_BUILDING_EXPLAINED.md](DAT_BUILDING_EXPLAINED.md) for details.
 
 ---
 
 ## 📊 Benchmarks
 
 **Test Environment:** Windows (AVX2 Enabled), Single Thread  
-**Engine:** DAT V2 with Buffer Protocol
+**Engine:** DAT V2 with Buffer Protocol  
+**Benchmark Text:** 1.31 MB mixed content
 
-| Profile | Vocab Size | Throughput | MB/sec | Status |
-| :--- | :--- | :--- | :--- | :--- |
-| **`lite`** | 50,000 | **9,786,707 tok/s** | 24.2 | ✅ HYPER-PRODUCTION |
-| **`science`** | ~400 | **5,127,313 tok/s** | 7.11 | ✅ PRODUCTION |
-| **`code`** | ~1,000 | **5,580,409 tok/s** | 8.13 | ✅ PRODUCTION |
-| **`multilingual`** | ~400 | **6,367,669 tok/s** | 8.23 | ✅ PRODUCTION |
-| **`arts_commerce`** | ~800 | **6,155,717 tok/s** | 10.38 | ✅ PRODUCTION |
+| Profile | Vocab Size | Tokens/sec | MB/sec | DAT Size | Status |
+| :--- | ---: | ---: | ---: | ---: | :---: |
+| **`science`** | 367 | **17,052,030** | 24.80 | 5 KB | ✅ |
+| **`code`** | 767 | **13,843,062** | 20.94 | 10 KB | ✅ |
+| **`multilingual`** | 382 | **10,745,167** | 14.28 | 6 KB | ✅ |
+| **`arts_commerce`** | 793 | **11,904,141** | 19.96 | 10 KB | ✅ |
+| **`lite (5k subset)`** | 5,000 | **14,070,582** | 20.81 | 143 KB | ✅ |
 
-*Benchmarks measured with DAT Engine V2 using mmap zero-copy loading.*
+*Benchmarks measured with DAT Engine V2 using mmap zero-copy loading. Run `python benchmark_quick.py` to reproduce.*
+
 
 ---
 

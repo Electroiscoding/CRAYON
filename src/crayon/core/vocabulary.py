@@ -108,6 +108,7 @@ class CrayonVocab:
          self.token_to_id = {t: i for i, t in enumerate(data)}
          self.id_to_token = {i: t for i, t in enumerate(data)}
 
+
     def tokenize(self, text: str) -> List[int]:
         if self.fast_mode:
             # CALL C++ DIRECTLY
@@ -115,6 +116,21 @@ class CrayonVocab:
         else:
             # SLOW PYTHON FALLBACK
             return self._python_tokenize(text)
+    
+    def decode(self, token_ids: List[int]) -> str:
+        """Decode token IDs back to text."""
+        if not self.id_to_token:
+            raise RuntimeError("Cannot decode: vocabulary mappings not loaded. "
+                             "This may happen if using pure DAT mode without JSON mappings.")
+        
+        tokens = []
+        for token_id in token_ids:
+            if token_id in self.id_to_token:
+                tokens.append(self.id_to_token[token_id])
+            else:
+                tokens.append("<UNK>")  # Unknown token fallback
+        
+        return "".join(tokens)
 
     def _python_tokenize(self, text: str) -> List[int]:
         # Simple longest match logic for fallback
