@@ -107,7 +107,7 @@ def get_long_description():
 if __name__ == '__main__':
     setup(
         name='xerv-crayon',
-        version='2.0.0',
+        version='2.0.1',
         description='Production-grade tokenizer achieving >16M tokens/s via AVX2/SIMD optimizations.',
         long_description=get_long_description(),
         long_description_content_type='text/markdown',

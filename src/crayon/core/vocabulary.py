@@ -27,48 +27,69 @@ class CrayonVocab:
     def load_profile(cls, name: str) -> 'CrayonVocab':
         """
         Loads a profile (e.g., 'science'). 
-        Checks for .dat binary first, then .json.
+        Checks strictly in this order:
+        1. Package installation directory (fastest, standard for pip install)
+        2. User cache directory (dev/legacy)
+        3. Fallback: Build on demand (slow)
         """
         from .profiles import PROFILES
         if name not in PROFILES:
              raise ValueError(f"Profile {name} unknown.")
 
-        cache_dir = Path.home() / ".cache" / "xerv" / "crayon" / "profiles"
-        dat_path = cache_dir / f"vocab_{name}.dat"
-        json_path = cache_dir / f"vocab_{name}.json"
-        
-        # If JSON doesn't exist, we might need to build it (using old logic or just fail per V2 spec)
-        # Assuming build_all_profiles runs separately.
-        
+        # PATH 1: Package Directory (Pre-bundled)
+        # This is where 'pip install' puts the files
+        try:
+            import importlib.resources
+            # Modern python resource access
+            pkg_dat_path = Path(importlib.resources.files('crayon.resources.dat') / f"vocab_{name}.dat")
+            pkg_json_path = Path(importlib.resources.files('crayon.resources.dat') / f"vocab_{name}.json")
+        except (ImportError, TypeError):
+            # Fallback for older python or non-standard installs
+            pkg_dir = Path(__file__).parent.parent / "resources" / "dat"
+            pkg_dat_path = pkg_dir / f"vocab_{name}.dat"
+            pkg_json_path = pkg_dir / f"vocab_{name}.json"
+            
         vocab = cls()
         
-        # 1. Try Loading Binary (Fast Path)
-        if dat_path.exists() and _C_BACKEND_AVAILABLE:
-            vocab._load_binary_dat(dat_path)
-            # Load Python mappings lazily if needed, but for "Hyper-Fast" we might skip it 
-            # OR we load them for decoding support.
-            # Spec step 4 suggests pure V2 structure.
-            if json_path.exists():
-                 vocab._load_json_mappings(json_path) # For decoding
-        # 2. Try Loading JSON (Slow Path)
-        elif json_path.exists():
-            print(f"[Crayon] DAT not found or Engine missing. Loading JSON {name}...")
-            vocab._load_json_legacy(json_path)
-            # Auto-Compile Upgrade?
-            # if _C_BACKEND_AVAILABLE: 
-            #    vocab._compile_and_reload(name, json_path, dat_path)
+        # 1. Try Package Directory (Fastest & Most Reliable)
+        if pkg_dat_path.exists() and _C_BACKEND_AVAILABLE:
+            vocab._load_binary_dat(pkg_dat_path)
+            if pkg_json_path.exists():
+                 vocab._load_json_mappings(pkg_json_path) # For decoding
+            return vocab
+            
+        # PATH 2: User Cache Directory (Development / Updates)
+        cache_dir = Path.home() / ".cache" / "xerv" / "crayon" / "profiles"
+        cache_dat_path = cache_dir / f"vocab_{name}.dat"
+        cache_json_path = cache_dir / f"vocab_{name}.json"
+
+        # 2. Try Cache Directory
+        if cache_dat_path.exists() and _C_BACKEND_AVAILABLE:
+            vocab._load_binary_dat(cache_dat_path)
+            if cache_json_path.exists():
+                 vocab._load_json_mappings(cache_json_path)
+            return vocab
+
+        # 3. JSON Fallback (Slow)
+        if pkg_json_path.exists():
+            print(f"[Crayon] DAT missing or Engine unavailable. Loading JSON {name} from package...")
+            vocab._load_json_legacy(pkg_json_path)
+            return vocab
+        elif cache_json_path.exists():
+            print(f"[Crayon] DAT missing or Engine unavailable. Loading JSON {name} from cache...")
+            vocab._load_json_legacy(cache_json_path)
+            return vocab
+
+        # 4. Total Fallback: Build on Demand
+        print(f"[Crayon] Profile {name} not found in package or cache. Building...")
+        from ..resources import build_and_cache_profile
+        build_and_cache_profile(name)
+        
+        # Reload from cache after build
+        if cache_dat_path.exists() and _C_BACKEND_AVAILABLE:
+             vocab._load_binary_dat(cache_dat_path)
         else:
-            # Trigger build if missing?
-            # Keeping it simple per spec.
-            print(f"Profile {name} not found at {json_path}")
-            # raise FileNotFoundError(f"Profile {name} not found.")
-            # Fallback to hydration if resources.py exists
-            from ..resources import build_and_cache_profile
-            build_and_cache_profile(name)
-            if dat_path.exists():
-                 vocab._load_binary_dat(dat_path)
-            else:
-                 vocab._load_json_legacy(json_path)
+             vocab._load_json_legacy(cache_json_path)
             
         return vocab
 

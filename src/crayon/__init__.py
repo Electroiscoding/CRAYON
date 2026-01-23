@@ -33,7 +33,7 @@ from .concurrency.pipeline import PipelineTokenizer
 from .memory.zerocopy import ZeroCopyTokenizer
 from .training import train_vocabulary, build_default_vocabulary
 
-__version__ = "1.1.0"
+__version__ = "2.0.1"
 __author__ = "Xerv Research Engineering Division"
 
 __all__ = [

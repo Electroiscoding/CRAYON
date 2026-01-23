@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xerv-crayon"
-version = "2.0.0"
+version = "2.0.1"
 description = "Production-grade tokenizer achieving >16M tokens/s via AVX2/SIMD optimizations and Double-Array Trie engine."
 readme = "README.md"
 requires-python = ">=3.10"
