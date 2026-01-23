@@ -9,6 +9,7 @@ Compares against:
 
 All metrics: Tokens/sec, MB/sec, Load Time, Avg Time per Iteration
 """
+
 import sys
 import os
 import time
@@ -25,25 +26,15 @@ ITERATIONS = 10
 WARMUP = 2
 
 # Test text - realistic mixed content
-BASE_TEXT = """The quick brown fox jumps over the lazy dog. Machine learning and artificial 
-intelligence are transforming industries across the globe. Natural language processing enables
-computers to understand and generate human language with remarkable accuracy.
-
-def fibonacci(n):
-    if n <= 1:
-        return n
-    return fibonacci(n-1) + fibonacci(n-2)
-
-class DataProcessor:
-    def __init__(self, config):
-        self.config = config
-    
-    def process(self, data):
-        return [self.transform(x) for x in data]
-
-The Schrödinger equation describes quantum mechanical behavior of particles.
-In thermodynamics, entropy measures disorder. E = mc². ∫f(x)dx.
-Hello, World! 你好世界! مرحبا بالعالم! Привет мир!
+BASE_TEXT = """T
+def matrix_multiply(A, B):
+    # Standard O(n^3) matrix multiplication
+    result = [[0 for _ in range(len(B[0]))] for _ in range(len(A))]
+    for i in range(len(A)):
+        for j in range(len(B[0])):
+            for k in range(len(B)):
+                result[i][j] += A[i][k] * B[k][j]
+    return result
 """
 
 TEST_TEXT = BASE_TEXT * 100  # ~62KB
@@ -91,6 +82,7 @@ def benchmark_tokenizer(name, tokenize_fn, load_fn=None, vocab_size=None):
         min_time = min(times)
         max_time = max(times)
         avg_tokens = sum(token_counts) / len(token_counts)
+        total_tokens = int(avg_tokens)  # Token count for this text
         
         text_bytes = len(TEST_TEXT.encode('utf-8'))
         tokens_per_sec = avg_tokens / avg_time
@@ -101,6 +93,7 @@ def benchmark_tokenizer(name, tokenize_fn, load_fn=None, vocab_size=None):
             "status": "OK",
             "vocab_size": vocab_size or "N/A",
             "avg_tokens": avg_tokens,
+            "token_count": total_tokens,
             "load_time_ms": load_time_ms,
             "avg_time_ms": avg_time * 1000,
             "min_time_ms": min_time * 1000,
@@ -109,11 +102,11 @@ def benchmark_tokenizer(name, tokenize_fn, load_fn=None, vocab_size=None):
             "mb_per_sec": mb_per_sec,
         }
         
-        print(f"✓ {tokens_per_sec:,.0f} tok/s | {avg_time*1000:.2f}ms | Load: {load_time_ms:.2f}ms")
+        print(f"[OK] {tokens_per_sec:,.0f} tok/s | {total_tokens:,} tokens | {avg_time*1000:.2f}ms | Load: {load_time_ms:.2f}ms")
         return result
         
     except Exception as e:
-        print(f"✗ ERROR: {e}")
+        print(f"[FAIL] ERROR: {e}")
         return {"name": name, "status": "FAIL", "error": str(e)}
 
 # ============================================================================
@@ -124,34 +117,30 @@ print("XERV CRAYON")
 print("="*50)
 
 try:
-    from crayon.c_ext import crayon_fast
+    from crayon import CrayonVocab
     
-    DAT_PATH = "src/crayon/resources/dat/vocab_lite.dat"
-    if os.path.exists(DAT_PATH):
-        def load_crayon():
-            global _crayon_fh, _crayon_mm
-            _crayon_fh = open(DAT_PATH, 'rb')
-            _crayon_mm = mmap.mmap(_crayon_fh.fileno(), 0, access=mmap.ACCESS_READ)
-            crayon_fast.load_dat(_crayon_mm)
-        
-        load_crayon()  # Pre-load for benchmark
-        
-        results.append(benchmark_tokenizer(
-            "CRAYON (lite, 50k)",
-            lambda text: crayon_fast.tokenize(text),
-            load_fn=load_crayon,
-            vocab_size=50000
-        ))
-        
-        # Cleanup
-        try:
-            crayon_fast.load_dat(b'CRAY\x02\x00\x00\x00\x00\x00\x00\x00')
-        except:
-            pass
+    def load_crayon_lite():
+        global _crayon_vocab
+        _crayon_vocab = CrayonVocab.load_profile("code")
+    
+    load_crayon_lite()  # Pre-load for benchmark
+    
+    if _crayon_vocab.fast_mode:
+        print("  [OK] Loaded with AVX2 engine")
     else:
-        print(f"  DAT not found: {DAT_PATH}")
+        print("  [WARN] Loaded in fallback mode (no AVX2)")
+    
+    results.append(benchmark_tokenizer(
+        "CRAYON (lite, 50k)",
+        lambda text: _crayon_vocab.tokenize(text),
+        load_fn=load_crayon_lite,
+        vocab_size=50000
+    ))
+        
 except ImportError as e:
     print(f"  CRAYON not available: {e}")
+except Exception as e:
+    print(f"  CRAYON load error: {e}")
 
 # ============================================================================
 # 2. OpenAI tiktoken
@@ -283,12 +272,13 @@ print()
 ok_results = [r for r in results if r.get("status") == "OK"]
 ok_results.sort(key=lambda x: x["tokens_per_sec"], reverse=True)
 
-print(f"{'Tokenizer':<28} | {'Vocab':>8} | {'Tokens/sec':>14} | {'MB/sec':>8} | {'Load Time':>10} | {'Avg Time':>10}")
-print("-" * 100)
+print(f"{'Tokenizer':<28} | {'Vocab':>8} | {'Tokens':>10} | {'Tokens/sec':>14} | {'MB/sec':>8} | {'Load Time':>10} | {'Avg Time':>10}")
+print("-" * 110)
 
 for r in ok_results:
     vocab = f"{r['vocab_size']:,}" if isinstance(r['vocab_size'], int) else r['vocab_size']
-    print(f"{r['name']:<28} | {vocab:>8} | {r['tokens_per_sec']:>14,.0f} | {r['mb_per_sec']:>8.2f} | {r['load_time_ms']:>9.2f}ms | {r['avg_time_ms']:>9.2f}ms")
+    token_count = f"{r['token_count']:,}" if 'token_count' in r else "N/A"
+    print(f"{r['name']:<28} | {vocab:>8} | {token_count:>10} | {r['tokens_per_sec']:>14,.0f} | {r['mb_per_sec']:>8.2f} | {r['load_time_ms']:>9.2f}ms | {r['avg_time_ms']:>9.2f}ms")
 
 print("-" * 100)
 
@@ -360,7 +350,7 @@ try:
     plt.tight_layout()
     fig_path = "benchmark_comparison.png"
     plt.savefig(fig_path, dpi=150, bbox_inches='tight', facecolor='white')
-    print(f"✓ Saved: {fig_path}")
+    print(f"[OK] Saved: {fig_path}")
     plt.close()
     
 except ImportError:
@@ -383,12 +373,13 @@ with open("BENCHMARK_RESULTS.md", "w", encoding="utf-8") as f:
     f.write("---\n\n")
     
     f.write("## Results (Real Tokenizers Only - Sorted by Speed)\n\n")
-    f.write("| Tokenizer | Vocab Size | Tokens/sec | MB/sec | Load Time | Avg Time | Min Time | Max Time |\n")
-    f.write("| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+    f.write("| Tokenizer | Vocab Size | Token Count | Tokens/sec | MB/sec | Load Time | Avg Time | Min Time | Max Time |\n")
+    f.write("| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
     
     for r in ok_results:
         vocab = f"{r['vocab_size']:,}" if isinstance(r['vocab_size'], int) else r['vocab_size']
-        f.write(f"| **{r['name']}** | {vocab} | {r['tokens_per_sec']:,.0f} | {r['mb_per_sec']:.2f} | {r['load_time_ms']:.2f}ms | {r['avg_time_ms']:.2f}ms | {r['min_time_ms']:.2f}ms | {r['max_time_ms']:.2f}ms |\n")
+        token_count = f"{r['token_count']:,}" if 'token_count' in r else "N/A"
+        f.write(f"| **{r['name']}** | {vocab} | {token_count} | {r['tokens_per_sec']:,.0f} | {r['mb_per_sec']:.2f} | {r['load_time_ms']:.2f}ms | {r['avg_time_ms']:.2f}ms | {r['min_time_ms']:.2f}ms | {r['max_time_ms']:.2f}ms |\n")
     
     f.write("\n---\n\n")
     f.write("## Visualization\n\n")
@@ -429,7 +420,7 @@ with open("BENCHMARK_RESULTS.md", "w", encoding="utf-8") as f:
     f.write("python benchmark_competitive.py\n")
     f.write("```\n")
 
-print("✓ Saved: BENCHMARK_RESULTS.md")
+print("[OK] Saved: BENCHMARK_RESULTS.md")
 
 # Save JSON
 with open("benchmark_results.json", "w") as f:
@@ -440,7 +431,7 @@ with open("benchmark_results.json", "w") as f:
         "results": ok_results
     }, f, indent=2)
 
-print("✓ Saved: benchmark_results.json")
+print("[OK] Saved: benchmark_results.json")
 
 print()
 print("=" * 100)

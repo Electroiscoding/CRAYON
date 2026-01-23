@@ -2,9 +2,9 @@
 
 **100% HONEST. NO SUGARCOATING. DATA-DRIVEN.**
 
-**Date:** 2026-01-20 16:54:54
+**Date:** 2026-01-23 15:29:11
 
-**Test Text Size:** 70,000 bytes (68.4 KB)
+**Test Text Size:** 30,800 bytes (30.1 KB)
 
 **Iterations:** 10 (+ 2 warmup)
 
@@ -12,15 +12,15 @@
 
 ## Results (Real Tokenizers Only - Sorted by Speed)
 
-| Tokenizer | Vocab Size | Tokens/sec | MB/sec | Load Time | Avg Time | Min Time | Max Time |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| **CRAYON (lite, 50k)** | 50,000 | 6,010,525 | 15.33 | 0.54ms | 4.56ms | 2.65ms | 7.92ms |
-| **tiktoken (cl100k/GPT-4)** | 100,000 | 524,469 | 2.18 | 0.01ms | 32.03ms | 22.74ms | 51.56ms |
-| **tiktoken (p50k/GPT-3)** | 50,000 | 466,823 | 1.55 | 0.00ms | 44.98ms | 23.19ms | 73.33ms |
-| **HF LLaMA (SP-BPE)** | 32,000 | 281,558 | 0.95 | 1212.02ms | 73.52ms | 67.25ms | 85.22ms |
-| **HF GPT-2 (BPE)** | 50,257 | 237,117 | 0.69 | 2051.18ms | 100.79ms | 84.93ms | 116.99ms |
-| **HF BERT (WordPiece)** | 30,522 | 202,269 | 0.73 | 1603.10ms | 95.43ms | 83.27ms | 121.42ms |
-| **HF T5 (SentencePiece)** | 32,000 | 189,928 | 0.68 | 1727.91ms | 102.15ms | 74.37ms | 130.69ms |
+| Tokenizer | Vocab Size | Token Count | Tokens/sec | MB/sec | Load Time | Avg Time | Min Time | Max Time |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **CRAYON (lite, 50k)** | 50,000 | 22,100 | 20,293,475 | 26.97 | 2.18ms | 1.09ms | 0.63ms | 1.52ms |
+| **tiktoken (p50k/GPT-3)** | 50,000 | 11,900 | 614,154 | 1.52 | 0.01ms | 19.38ms | 13.81ms | 27.36ms |
+| **tiktoken (cl100k/GPT-4)** | 100,000 | 9,000 | 578,216 | 1.89 | 0.01ms | 15.57ms | 12.40ms | 20.60ms |
+| **HF LLaMA (SP-BPE)** | 32,000 | 11,401 | 389,845 | 1.00 | 1357.85ms | 29.24ms | 25.61ms | 36.08ms |
+| **HF T5 (SentencePiece)** | 32,000 | 12,601 | 314,385 | 0.73 | 1820.48ms | 40.08ms | 34.52ms | 49.43ms |
+| **HF BERT (WordPiece)** | 30,522 | 11,402 | 285,649 | 0.74 | 1613.55ms | 39.92ms | 35.08ms | 55.06ms |
+| **HF GPT-2 (BPE)** | 50,257 | 15,700 | 263,369 | 0.49 | 1944.51ms | 59.61ms | 44.19ms | 72.57ms |
 
 ---
 
@@ -35,12 +35,12 @@
 | Tokenizer | Speed vs CRAYON |
 | :--- | ---: |
 | **CRAYON (lite, 50k)** | **baseline** |
-| tiktoken (cl100k/GPT-4) | 11.5x slower |
-| tiktoken (p50k/GPT-3) | 12.9x slower |
-| HF LLaMA (SP-BPE) | 21.3x slower |
-| HF GPT-2 (BPE) | 25.3x slower |
-| HF BERT (WordPiece) | 29.7x slower |
-| HF T5 (SentencePiece) | 31.6x slower |
+| tiktoken (p50k/GPT-3) | 33.0x slower |
+| tiktoken (cl100k/GPT-4) | 35.1x slower |
+| HF LLaMA (SP-BPE) | 52.1x slower |
+| HF T5 (SentencePiece) | 64.5x slower |
+| HF BERT (WordPiece) | 71.0x slower |
+| HF GPT-2 (BPE) | 77.1x slower |
 
 ---
 

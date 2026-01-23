@@ -1,27 +1,44 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=68.0", "wheel", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "xerv-crayon"
-version = "1.1.0"
-description = "Production-grade tokenizer achieving >2M tokens/s via AVX2 optimizations."
+version = "2.0.0"
+description = "Production-grade tokenizer achieving >16M tokens/s via AVX2/SIMD optimizations and Double-Array Trie engine."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [
   {name = "Soham Pal", email = "botmaker583@gmail.com"},
   {name = "Xerv Research Engineering Division"}
 ]
-keywords = ["tokenizer", "nlp", "simd", "avx2", "high-performance", "zero-copy"]
+keywords = [
+    "tokenizer", 
+    "nlp", 
+    "simd", 
+    "avx2", 
+    "high-performance", 
+    "zero-copy",
+    "dat",
+    "double-array-trie",
+    "machine-learning",
+    "deep-learning",
+    "transformers",
+    "llm"
+]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: C",
+    "Programming Language :: C++",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Text Processing :: Linguistic",
     "Operating System :: POSIX :: Linux",
@@ -41,10 +58,41 @@ full = [
 ]
 dev = [
     "pytest>=7.0.0",
-    "pytest-benchmark>=4.0.0"
+    "pytest-benchmark>=4.0.0",
+    "build>=1.0.0",
+    "twine>=4.0.0"
+]
+benchmark = [
+    "tiktoken>=0.5.0",
+    "transformers>=4.30.0",
+    "matplotlib>=3.7.0"
 ]
 
 [project.urls]
 Homepage = "https://github.com/xerv/crayon"
 Repository = "https://github.com/xerv/crayon.git"
 Documentation = "https://github.com/xerv/crayon#readme"
+"Bug Tracker" = "https://github.com/xerv/crayon/issues"
+
+[project.scripts]
+crayon-benchmark = "crayon.cli:run_benchmark"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"crayon" = [
+    "resources/dat/*.dat",
+    "resources/*.txt",
+    "resources/*.csv",
+    "c_ext/*.h",
+    "c_ext/*.c",
+    "c_ext/*.cpp"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
