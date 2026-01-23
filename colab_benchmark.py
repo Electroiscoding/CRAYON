@@ -2,11 +2,19 @@ try:
     import tiktoken
     import transformers
     import crayon
+    from importlib.metadata import version
+    if version("xerv-crayon") < "2.0.3":
+        raise ImportError("Old version detected")
 except ImportError:
     import subprocess
     import sys
-    print("Installing dependencies...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "xerv-crayon", "tiktoken", "transformers"])
+    import os
+    print("Installing xerv-crayon>=2.0.3...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "xerv-crayon>=2.0.3", "tiktoken", "transformers"])
+    print("Installation complete. PLEASE RESTART RUNTIME (Runtime > Restart Session) and run this cell again.")
+    # Attempt to kill own process to force restart in some envs
+    # os.kill(os.getpid(), 9)
+    sys.exit(0)
 
 import time
 import os

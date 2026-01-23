@@ -1,0 +1,3 @@
+"""
+Binary vocabulary data package.
+"""
