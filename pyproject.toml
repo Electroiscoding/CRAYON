@@ -4,14 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xerv-crayon"
-version = "2.0.3"
-description = "Production-grade tokenizer achieving >16M tokens/s via AVX2/SIMD optimizations and Double-Array Trie engine."
+version = "4.0.1"
+description = "The Omni-Backend Tokenizer (CPU/CUDA/ROCm)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [
-  {name = "Soham Pal", email = "botmaker583@gmail.com"},
-  {name = "Xerv Research Engineering Division"}
+  {name = "Xerv Research Engineering Division", email = "engineering@xerv.ai"}
 ]
 keywords = [
     "tokenizer", 
