@@ -13,7 +13,13 @@
 #include <iostream>
 #include <cstring>
 
-// --- SIMD INTRINSICS ---
+// --- SIMD INTRINSICS & CPU DETECTION ---
+#ifdef _MSC_VER
+    #include <intrin.h>
+#else
+    #include <cpuid.h>
+#endif
+
 #if defined(__x86_64__) || defined(_M_X64)
     #include <immintrin.h> // AVX2
     #define USE_AVX2 1
@@ -31,6 +37,52 @@ struct DATContext {
 };
 
 static DATContext ctx;
+
+// --- HARDWARE TELEMETRY ---
+static void get_cpu_brand(char* brand) {
+    brand[0] = '\0';
+    #ifdef _MSC_VER
+        int regs[4];
+        __cpuid(regs, 0x80000000);
+        if (regs[0] >= 0x80000004) {
+            __cpuid((int*)(brand), 0x80000002);
+            __cpuid((int*)(brand+16), 0x80000003);
+            __cpuid((int*)(brand+32), 0x80000004);
+        }
+    #else
+        unsigned int eax, ebx, ecx, edx;
+        if (__get_cpuid_max(0x80000000, NULL) >= 0x80000004) {
+            __get_cpuid(0x80000002, &eax, &ebx, &ecx, &edx);
+            memcpy(brand, &eax, 4); memcpy(brand+4, &ebx, 4); memcpy(brand+8, &ecx, 4); memcpy(brand+12, &edx, 4);
+            __get_cpuid(0x80000003, &eax, &ebx, &ecx, &edx);
+            memcpy(brand+16, &eax, 4); memcpy(brand+20, &ebx, 4); memcpy(brand+24, &ecx, 4); memcpy(brand+28, &edx, 4);
+            __get_cpuid(0x80000004, &eax, &ebx, &ecx, &edx);
+            memcpy(brand+32, &eax, 4); memcpy(brand+36, &ebx, 4); memcpy(brand+40, &ecx, 4); memcpy(brand+44, &edx, 4);
+        }
+    #endif
+}
+
+static PyObject* get_hardware_info(PyObject* self, PyObject* args) {
+    char brand[49] = {0};
+    get_cpu_brand(brand);
+    
+    // Trim whitespace
+    std::string cpu_name = brand;
+    size_t last = cpu_name.find_last_not_of(' ');
+    if (last != std::string::npos) cpu_name = cpu_name.substr(0, last + 1);
+    if (cpu_name.empty()) cpu_name = "Unknown CPU";
+
+    std::string features = "Standard";
+    #if USE_AVX2
+        features = "AVX2";
+        #if defined(__AVX512F__)
+            features = "AVX-512 (Nitro)";
+        #endif
+    #endif
+
+    std::string info = cpu_name + " [" + features + "]";
+    return PyUnicode_FromString(info.c_str());
+}
 
 // --- AVX2 ASCII CHECK ---
 // Returns 1 if next 32 bytes are pure ASCII, 0 otherwise.
@@ -210,13 +262,14 @@ static PyObject* load_dat(PyObject* self, PyObject* args) {
 static PyMethodDef Methods[] = {
     {"tokenize", tokenize, METH_VARARGS, "Fast DAT Tokenize"},
     {"load_dat", load_dat, METH_VARARGS, "Load Memory Map"},
+    {"get_hardware_info", get_hardware_info, METH_VARARGS, "Get CPU Telemetry"},
     {NULL, NULL, 0, NULL}
 };
 
 static struct PyModuleDef module = {
-    PyModuleDef_HEAD_INIT, "crayon_fast", "Crayon AVX2 Backend", -1, Methods
+    PyModuleDef_HEAD_INIT, "crayon_cpu", "Crayon AVX2 Backend", -1, Methods
 };
 
-PyMODINIT_FUNC PyInit_crayon_fast(void) {
+PyMODINIT_FUNC PyInit_crayon_cpu(void) {
     return PyModule_Create(&module);
 }

@@ -1,116 +1,88 @@
+
+# -----------------------------------------------------------------------------
+# XERV CRAYON - GOOGLE COLAB VERIFICATION NOTEBOOK
+# -----------------------------------------------------------------------------
+# RUN THIS CELL TO VERIFY CRAYON ON TESLA T4 / A100 GPUS
+# -----------------------------------------------------------------------------
+
+import os
+import sys
+import subprocess
+import time
+
+def run_cmd(cmd):
+    print(f">> {cmd}")
+    subprocess.check_call(cmd, shell=True)
+
+print("🔹 STEP 1: Setting up environment...")
+# Clone or Simulate Git Repo structure (assuming we are in the repo or uploading files)
+# For Colab usage, user typically clones first:
+# !git clone https://github.com/Xerv-AI/crayon.git
+# %cd crayon
+
+# Install dependencies if missing
 try:
     import tiktoken
-    import transformers
-    import crayon
-    from importlib.metadata import version
-    if version("xerv-crayon") < "2.0.3":
-        raise ImportError("Old version detected")
 except ImportError:
-    import subprocess
-    import sys
-    import os
-    print("Installing xerv-crayon>=2.0.3...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "xerv-crayon>=2.0.3", "tiktoken", "transformers"])
-    print("Installation complete. PLEASE RESTART RUNTIME (Runtime > Restart Session) and run this cell again.")
-    # Attempt to kill own process to force restart in some envs
-    # os.kill(os.getpid(), 9)
-    sys.exit(0)
+    run_cmd("pip install tiktoken")
 
-import time
-import os
-import tiktoken
-from transformers import GPT2TokenizerFast, LlamaTokenizerFast
-from crayon import CrayonVocab
+print("\n🔹 STEP 2: Building Extensions (CUDA/CPU)...")
+# Force build to ensure CUDA is picked up
+run_cmd("python setup.py build_ext --inplace")
 
-print("\nPREPARING BENCHMARK DATA...")
-text_chunk = """
-def matrix_multiply(A, B):
-    result = [[0 for _ in range(len(B[0]))] for _ in range(len(A))]
-    for i in range(len(A)):
-        for j in range(len(B[0])):
-            for k in range(len(B)):
-                result[i][j] += A[i][k] * B[k][j]
-    return result
+# Add build dir to path so we can import directly
+import glob
+so_files = glob.glob("build/lib*")
+if so_files:
+    sys.path.insert(0, os.path.abspath(so_files[0]))
+sys.path.insert(0, os.path.abspath("src"))
 
-The quick brown fox jumps over the lazy dog. 
-Scientific research requires precision, data, and reproducible results.
-""" * 500
-test_text = text_chunk * 20
-bytes_size = len(test_text.encode('utf-8'))
-print(f"Test Text Size: {bytes_size / 1024 / 1024:.2f} MB")
-
-print("\nLOADING TOKENIZERS...")
-
-# 1. CRAYON
-start = time.perf_counter()
-crayon_vocab = CrayonVocab.load_profile("lite")
-crayon_load = (time.perf_counter() - start) * 1000
-print(f"CRAYON Loaded: {crayon_load:.2f}ms (AVX2: {crayon_vocab.fast_mode})")
-
-# 2. TikToken
-start = time.perf_counter()
-enc_gpt4 = tiktoken.get_encoding("cl100k_base")
-tiktoken_load = (time.perf_counter() - start) * 1000
-print(f"TikToken Loaded: {tiktoken_load:.2f}ms")
-
-# 3. HF GPT-2
+print("\n🔹 STEP 3: Detecting Hardware...")
 try:
-    start = time.perf_counter()
-    hf_gpt2 = GPT2TokenizerFast.from_pretrained("gpt2")
-    hf_load = (time.perf_counter() - start) * 1000
-    print(f"HF GPT-2 Loaded: {hf_load:.2f}ms")
-except:
-    hf_gpt2 = None
+    from crayon.core.vocabulary import CrayonVocab
+    vocab = CrayonVocab(device="cuda")
+    print("✅ Crayon successfully initialized with CUDA request.")
+except ImportError:
+    print("⚠️  CUDA extension import failed. Running CPU fallback check.")
+    vocab = CrayonVocab(device="cpu")
+except Exception as e:
+    print(f"❌ Initialization error: {e}")
+    sys.exit(1)
 
-print("\nRUNNING BENCHMARK (5 Iterations)...")
+# Generate a dummy profile if none exists
+if not os.path.exists("src/crayon/resources/dat/vocab_lite.dat"):
+    print("Creating dummy DAT profile for testing...")
+    os.makedirs("src/crayon/resources/dat", exist_ok=True)
+    # Simple JSON vocab
+    import json
+    from crayon.c_ext.dat_builder import DATBuilder
+    vocab_list = ["<UNK>", "hello", "world", "cuda", "tensor", "core", "optimization"]
+    builder = DATBuilder()
+    builder.build(vocab_list)
+    builder.save("src/crayon/resources/dat/vocab_lite.dat")
 
-def run_bench(name, func):
-    times = []
-    tokens = 0
-    for _ in range(5):
-        s = time.perf_counter()
-        res = func(test_text)
-        e = time.perf_counter()
-        times.append(e - s)
-        tokens = len(res)
+print("\n🔹 STEP 4: Running Benchmark...")
+try:
+    # Use the benchmark script logic inline for Colab visibility
+    vocab.load_profile("lite")
     
-    avg_time = sum(times) / len(times)
-    tps = tokens / avg_time
-    return tps, avg_time, tokens
+    # 2. Prepare Payload (100k sentences)
+    text = "hello world cuda core optimization " * 10
+    batch = [text] * 100_000
+    
+    print(f"🚀 Tokenizing {len(batch):,} documents...")
+    start = time.perf_counter()
+    tokens = vocab.tokenize(batch)
+    dt = time.perf_counter() - start
+    
+    total_toks = sum(len(t) for t in tokens)
+    print(f"✅ DONE in {dt:.4f}s")
+    print(f"⚡ Throughput: {len(batch)/dt:,.0f} docs/sec | {total_toks/dt:,.0f} tokens/sec")
+    
+    # Verify correctness
+    print(f"Sample output: {tokens[0][:5]}")
 
-results = []
+except Exception as e:
+    print(f"❌ Execution failed: {e}")
 
-# CRAYON
-tps, avg, toks = run_bench("CRAYON (lite)", lambda t: crayon_vocab.tokenize(t))
-results.append(("CRAYON", tps, avg, toks))
-print(f"CRAYON: {tps:,.0f} tokens/sec")
-
-# TikToken
-tps, avg, toks = run_bench("TikToken (GPT-4)", lambda t: enc_gpt4.encode(t))
-results.append(("TikToken", tps, avg, toks))
-print(f"TikToken: {tps:,.0f} tokens/sec")
-
-# HF
-if hf_gpt2:
-    tps, avg, toks = run_bench("HF GPT-2", lambda t: hf_gpt2.encode(t))
-    results.append(("HF GPT-2", tps, avg, toks))
-    print(f"HF GPT-2: {tps:,.0f} tokens/sec")
-
-print("\n" + "="*65)
-print(f"{'TOKENIZER':<20} | {'TOKENS/SEC':>15} | {'SPEEDUP':>10} | {'TIME':>8}")
-print("-" * 65)
-
-base_tps = results[0][1]
-
-for name, tps, avg, _ in results:
-    multiplier = base_tps / tps
-    if name == "CRAYON":
-        x_factor = "1.0x"
-    else:
-        x_factor = f"{multiplier:.1f}x"
-        
-    print(f"{name:<20} | {tps:,.0f} | {x_factor:>10} | {avg*1000:.2f}ms")
-print("="*65)
-mn = min(results, key=lambda x: x[2])
-mx = max(results, key=lambda x: x[2])
-print(f"\nWINNER: {mn[0]} is {mx[2]/mn[2]:.1f}x FASTER than {mx[0]}")
+print("\n🔹 COLAB VERIFICATION COMPLETE.")

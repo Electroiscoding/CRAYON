@@ -1,178 +1,149 @@
-
 import mmap
 import os
-import json
-from typing import List, Optional, Iterator, Dict, Tuple, Any
-from pathlib import Path
+import contextlib
+from typing import List, Union, Literal
 
-# Try Loading Optimized Backend
-try:
-    from ..c_ext import crayon_fast
-    _C_BACKEND_AVAILABLE = True
-except ImportError:
-    _C_BACKEND_AVAILABLE = False
-    print("[CRAYON] Warning: AVX2 backend missing. Falling back to slow mode.")
+# Type Alias for Device Selection
+DeviceType = Literal["cpu", "cuda", "rocm"]
 
 class CrayonVocab:
-    def __init__(self):
-        self._mmap = None
-        self.fast_mode = False
-        self.unk_token_id = 1 # Spec hardcodes fallback to 1, keeping consistent.
+    def __init__(self, device: DeviceType = "cpu"):
+        """
+        Initializes the Crayon Tokenizer on the specified hardware.
         
-        # Fallback dicts
-        self.token_to_id = {}
-        self.id_to_token = {}
-
-    @classmethod
-    def load_profile(cls, name: str) -> 'CrayonVocab':
+        Args:
+            device: 
+                'cpu'  - Auto-selects AVX2 or AVX-512 based on hardware.
+                'cuda' - Uses NVIDIA GPU (requires crayon_cuda extension).
+                'rocm' - Uses AMD GPU (requires crayon_rocm extension).
         """
-        Loads a profile (e.g., 'science'). 
-        Checks strictly in this order:
-        1. Package installation directory (fastest, standard for pip install)
-        2. User cache directory (dev/legacy)
-        3. Fallback: Build on demand (slow)
-        """
-        from .profiles import PROFILES
-        if name not in PROFILES:
-             raise ValueError(f"Profile {name} unknown.")
-
-        # PATH 1: Package Directory (Pre-bundled)
-        # This is where 'pip install' puts the files
+        self.device = device
+        self._cpu_backend = None
+        self._gpu_backend = None
+        self._dat_mem_ref = None # Keep reference to mmap to prevent garbage collection
+        self.current_profile_path = None
+        
+        # 1. Load CPU Backend (Always Required for Fallback/IO)
         try:
-            import importlib.resources
-            # Modern python resource access
-            pkg_dat_path = Path(importlib.resources.files('crayon.resources.dat') / f"vocab_{name}.dat")
-            pkg_json_path = Path(importlib.resources.files('crayon.resources.dat') / f"vocab_{name}.json")
-        except (ImportError, TypeError):
-            # Fallback for older python or non-standard installs
-            pkg_dir = Path(__file__).parent.parent / "resources" / "dat"
-            pkg_dat_path = pkg_dir / f"vocab_{name}.dat"
-            pkg_json_path = pkg_dir / f"vocab_{name}.json"
-            
-        vocab = cls()
-        
-        # 1. Try Package Directory (Fastest & Most Reliable)
-        if pkg_dat_path.exists() and _C_BACKEND_AVAILABLE:
-            vocab._load_binary_dat(pkg_dat_path)
-            if pkg_json_path.exists():
-                 vocab._load_json_mappings(pkg_json_path) # For decoding
-            return vocab
-            
-        # PATH 2: User Cache Directory (Development / Updates)
-        cache_dir = Path.home() / ".cache" / "xerv" / "crayon" / "profiles"
-        cache_dat_path = cache_dir / f"vocab_{name}.dat"
-        cache_json_path = cache_dir / f"vocab_{name}.json"
+            from ..c_ext import crayon_cpu
+            self._cpu_backend = crayon_cpu
+            if device == "cpu":
+                info = self._cpu_backend.get_hardware_info()
+                print(f"[CRAYON] [+] CPU Engine Active: {info}")
+        except ImportError:
+            raise ImportError("Critical: 'crayon_cpu' extension missing. Build failed?")
 
-        # 2. Try Cache Directory
-        if cache_dat_path.exists() and _C_BACKEND_AVAILABLE:
-            vocab._load_binary_dat(cache_dat_path)
-            if cache_json_path.exists():
-                 vocab._load_json_mappings(cache_json_path)
-            return vocab
+        # 2. Conditional GPU Backend Loading
+        if device == "cuda":
+            try:
+                from ..c_ext import crayon_cuda
+                self._gpu_backend = crayon_cuda
+                info = self._gpu_backend.get_hardware_info()
+                print(f"[CRAYON] [+] NVIDIA Engine Active: {info}")
+            except ImportError:
+                print("[CRAYON] [!] CUDA requested but backend missing. Falling back to CPU.")
+                self.device = "cpu"
 
-        # 3. JSON Fallback (Slow)
-        if pkg_json_path.exists():
-            print(f"[Crayon] DAT missing or Engine unavailable. Loading JSON {name} from package...")
-            vocab._load_json_legacy(pkg_json_path)
-            return vocab
-        elif cache_json_path.exists():
-            print(f"[Crayon] DAT missing or Engine unavailable. Loading JSON {name} from cache...")
-            vocab._load_json_legacy(cache_json_path)
-            return vocab
+        elif device == "rocm":
+            try:
+                from ..c_ext import crayon_rocm
+                self._gpu_backend = crayon_rocm
+                info = self._gpu_backend.get_hardware_info()
+                print(f"[CRAYON] [+] AMD ROCm Engine Active: {info}")
+            except ImportError:
+                print("[CRAYON] [!] ROCm requested but backend missing. Falling back to CPU.")
+                self.device = "cpu"
 
-        # 4. Total Fallback: Build on Demand
-        print(f"[Crayon] Profile {name} not found in package or cache. Building...")
-        from ..resources import build_and_cache_profile
-        build_and_cache_profile(name)
-        
-        # Reload from cache after build
-        if cache_dat_path.exists() and _C_BACKEND_AVAILABLE:
-             vocab._load_binary_dat(cache_dat_path)
+    def load_profile(self, name_or_path: str):
+        """
+        Hot-Swaps the active vocabulary cartridge into memory.
+        Supports instant switching on CPU and fast switching on GPU.
+        """
+        # Resolve path (assuming standard cache location if name is given)
+        if os.path.exists(name_or_path):
+            path = name_or_path
         else:
-             vocab._load_json_legacy(cache_json_path)
+             # Default lookup path
+             path = os.path.expanduser(f"~/.cache/xerv/crayon/profiles/vocab_{name_or_path}.dat")
+        
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Profile not found: {path}")
+
+        self.current_profile_path = path
+
+        # Always memory map on host first (Zero-Copy)
+        f = open(path, "rb")
+        self._dat_mem_ref = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+
+        # Dispatch Load Command based on active device
+        if self.device == "cpu":
+            # CPU Engine reads directly from the memory map via pointer
+            self._cpu_backend.load_dat(self._dat_mem_ref)
+        
+        elif self.device == "cuda":
+            # NVIDIA Engine: Seek to start and read bytes to copy to VRAM
+            f.seek(0)
+            raw_bytes = f.read()
+            self._gpu_backend.load_gpu(raw_bytes)
             
-        return vocab
+        elif self.device == "rocm":
+            # AMD Engine: Seek to start and read bytes to copy to HBM
+            f.seek(0)
+            raw_bytes = f.read()
+            self._gpu_backend.load_rocm(raw_bytes)
 
-    def _load_binary_dat(self, path: Path):
-        """Zero-Copy Load via mmap."""
-        self.file_handle = open(path, "rb")
-        # Map file to memory
-        self._mmap = mmap.mmap(self.file_handle.fileno(), 0, access=mmap.ACCESS_READ)
-        # Initialize C++ engine
-        size = crayon_fast.load_dat(self._mmap)
-        self.fast_mode = True
-        # print(f"[CRAYON] Loaded AVX2 Engine. Size: {size}")
-
-    def _load_json_legacy(self, path: Path):
-        """Legacy slow loader."""
-        with open(path, 'r', encoding='utf-8') as f:
-            tokens = json.load(f)
+    @contextlib.contextmanager
+    def using_profile(self, name: str):
+        """
+        Context Manager for temporary profile switching.
+        Allows 'within a line' or block-scoped profile changes.
+        """
+        # 1. Save current state
+        previous_path = self.current_profile_path
         
-        if isinstance(tokens, list):
-             data = tokens
-        elif isinstance(tokens, dict):
-             # Sort by ID
-             data = [k for k, v in sorted(tokens.items(), key=lambda x: x[1])]
-             
-        self.token_to_id = {t: i for i, t in enumerate(data)}
-        self.id_to_token = {i: t for i, t in enumerate(data)}
-        self.fast_mode = False
+        # 2. Switch to new profile
+        try:
+            self.load_profile(name)
+            yield self
+        finally:
+            # 3. Restore previous profile
+            if previous_path:
+                self.load_profile(previous_path)
 
-    def _load_json_mappings(self, path: Path):
-         """Load just the mappings for decoding support."""
-         with open(path, 'r', encoding='utf-8') as f:
-            tokens = json.load(f)
-         if isinstance(tokens, list):
-             data = tokens
-         else:
-             data = [k for k, v in sorted(tokens.items(), key=lambda x: x[1])]
-         self.token_to_id = {t: i for i, t in enumerate(data)}
-         self.id_to_token = {i: t for i, t in enumerate(data)}
+    def tokenize(self, text_input: Union[str, List[str]]) -> Union[List[int], List[List[int]]]:
+        """
+        The 'Smash Through' Tokenizer Function.
+        Handles single strings or massive batches automatically using the active engine.
+        """
+        is_batch = isinstance(text_input, list)
 
-
-    def tokenize(self, text: str) -> List[int]:
-        if self.fast_mode:
-            # CALL C++ DIRECTLY
-            return crayon_fast.tokenize(text)
-        else:
-            # SLOW PYTHON FALLBACK
-            return self._python_tokenize(text)
-    
-    def decode(self, token_ids: List[int]) -> str:
-        """Decode token IDs back to text."""
-        if not self.id_to_token:
-            raise RuntimeError("Cannot decode: vocabulary mappings not loaded. "
-                             "This may happen if using pure DAT mode without JSON mappings.")
-        
-        tokens = []
-        for token_id in token_ids:
-            if token_id in self.id_to_token:
-                tokens.append(self.id_to_token[token_id])
+        # --- GPU PATHS (Batch Optimized) ---
+        if self.device in ["cuda", "rocm"] and self._gpu_backend:
+            # GPU demands a list. Wrap single string if needed.
+            batch = text_input if is_batch else [text_input]
+            
+            # Execute Kernel
+            if self.device == "cuda":
+                # CUDA V2 returns (tokens, metadata)
+                ret = self._gpu_backend.tokenize_batch_gpu(batch)
+                if isinstance(ret, tuple):
+                    results, meta = ret
+                    # Optional: Expose metadata if context requires, or log on high latency
+                    # if meta['processing_time_ms'] > 1000:
+                    #     print(f"[CRAYON] Slow Batch: {meta['processing_time_ms']:.2f}ms")
+                else:
+                    results = ret
+            
             else:
-                tokens.append("<UNK>")  # Unknown token fallback
-        
-        return "".join(tokens)
+                results = self._gpu_backend.tokenize_batch_rocm(batch)
+            
+            # Unwrap if input was single string
+            return results if is_batch else results[0]
 
-    def _python_tokenize(self, text: str) -> List[int]:
-        # Simple longest match logic for fallback
-        tokens = []
-        pos = 0
-        n = len(text)
-        while pos < n:
-            match = False
-            # Check decreasing lengths (naive)
-            for l in range(min(20, n - pos), 0, -1):
-                sub = text[pos:pos+l]
-                if sub in self.token_to_id:
-                    tokens.append(self.token_to_id[sub])
-                    pos += l
-                    match = True
-                    break
-            if not match:
-                tokens.append(1) # UNK
-                pos += 1
-        return tokens
-    
-    # Keeping minimal API compatibility
-    def __len__(self):
-        return len(self.token_to_id) if self.token_to_id else 0
+        # --- CPU PATH (Latency Optimized) ---
+        else:
+            # CPU engine handles single strings natively for lowest latency
+            if is_batch:
+                return [self._cpu_backend.tokenize(s) for s in text_input]
+            else:
+                return self._cpu_backend.tokenize(text_input)

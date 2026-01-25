@@ -1,153 +1,111 @@
-"""
-XERV Crayon - Production Build System
-======================================
-Handles C++ extension compilation with AVX2/SIMD optimizations across all platforms.
-"""
-import sys
 import os
-import platform
-from pathlib import Path
+import sys
+import subprocess
 from setuptools import setup, Extension, find_packages
-from setuptools.command.build_ext import build_ext
 
+# --- DETECTOR UTILITIES ---
+def check_binary(binary_name):
+    """
+    Checks if a compiler binary exists in the system PATH.
+    Returns True if found, False otherwise.
+    """
+    try:
+        # Run with --version to verify it's executable
+        subprocess.check_output([binary_name, "--version"], stderr=subprocess.STDOUT)
+        return True
+    except (OSError, subprocess.CalledProcessError):
+        return False
 
-class AVX2BuildExt(build_ext):
-    """Custom build extension that properly handles AVX2 compilation."""
+# Detect Hardware Compilers via shell
+HAS_NVCC = check_binary("nvcc")
+HAS_HIPCC = check_binary("hipcc")
+# Allow forced overrides via environment variables for CI/CD pipelines
+FORCE_ROCM = os.environ.get("CRAYON_FORCE_ROCM") == "1"
+FORCE_CUDA = os.environ.get("CRAYON_FORCE_CUDA") == "1"
+
+ext_modules = []
+
+# --- 1. CPU BACKEND (The Foundation) ---
+# Supports AVX2 (Standard) and AVX-512 (Nitro)
+cpu_flags = ["-O3", "-fPIC"]
+if sys.platform == "linux" or sys.platform == "darwin":
+    cpu_flags.append("-march=native") # Optimize for the build machine's CPU
+    # Explicitly enable AVX512 support in compiler so intrinsics code compiles
+    cpu_flags.append("-mavx512f") 
+    cpu_flags.append("-mavx512bw")
+elif sys.platform == "win32":
+    # MSVC specific flags
+    cpu_flags = ["/O2", "/arch:AVX2"] 
+
+ext_modules.append(Extension(
+    "crayon.c_ext.crayon_cpu",
+    sources=["src/crayon/c_ext/cpu_engine.cpp"],
+    extra_compile_args=cpu_flags,
+    language="c++"
+))
+
+# --- 2. NVIDIA CUDA BACKEND (Green Team) ---
+if HAS_NVCC or FORCE_CUDA:
+    print("[+] [CRAYON BUILD] NVIDIA NVCC detected. Building 'crayon_cuda'...")
+    # In a production PyPI package, you would typically use a custom 'build_ext' class
+    # to handle .cu files correctly. Here we define the extension intent.
+    # Assuming the environment knows how to link cudart.
+    ext_modules.append(Extension(
+        "crayon.c_ext.crayon_cuda",
+        sources=["src/crayon/c_ext/gpu_engine_cuda.cu"],
+        libraries=["cudart"],
+        # runtime_library_dirs=["/usr/local/cuda/lib64"] 
+    ))
+else:
+    print("[!] [CRAYON BUILD] NVCC not found. Skipping NVIDIA Backend.")
+
+# --- 3. AMD ROCm BACKEND (Red Team) ---
+if HAS_HIPCC or FORCE_ROCM:
+    print("[+] [CRAYON BUILD] AMD HIPCC detected. Building 'crayon_rocm'...")
     
-    def build_extensions(self):
-        # Detect compiler
-        compiler_type = self.compiler.compiler_type
-        
-        for ext in self.extensions:
-            if compiler_type == 'msvc':
-                # Microsoft Visual C++ (Windows)
-                ext.extra_compile_args = [
-                    '/O2',           # Maximum optimization
-                    '/arch:AVX2',    # Enable AVX2 SIMD
-                    '/EHsc',         # Exception handling
-                    '/std:c++17',    # C++17 standard
-                    '/DNDEBUG',      # Disable debug assertions
-                ]
-            elif compiler_type in ('unix', 'mingw32'):
-                # GCC / Clang (Linux, macOS, MinGW)
-                ext.extra_compile_args = [
-                    '-O3',                    # Maximum optimization
-                    '-march=native',          # Use native CPU features (includes AVX2 if available)
-                    '-fPIC',                  # Position independent code
-                    '-std=c++17',             # C++17 standard
-                    '-DNDEBUG',               # Disable debug assertions
-                    '-ffast-math',            # Fast floating point
-                    '-funroll-loops',         # Unroll loops
-                ]
-                
-                # macOS specific
-                if platform.system() == 'Darwin':
-                    # Check if we're on Apple Silicon or Intel
-                    if platform.machine() == 'arm64':
-                        # Apple Silicon - use ARM NEON instead of AVX2
-                        ext.extra_compile_args = [
-                            '-O3',
-                            '-std=c++17',
-                            '-DNDEBUG',
-                            '-ffast-math',
-                            '-funroll-loops',
-                        ]
-                    else:
-                        # Intel Mac
-                        ext.extra_compile_args.append('-mavx2')
-                else:
-                    # Linux - explicitly enable AVX2
-                    ext.extra_compile_args.append('-mavx2')
-                    
-        build_ext.build_extensions(self)
+    # HIPCC acts like GCC/Clang but links ROCm runtime automatically when invoked.
+    # We define the macro so the preprocessor knows we are on AMD.
+    ext_modules.append(Extension(
+        "crayon.c_ext.crayon_rocm",
+        sources=["src/crayon/c_ext/rocm_engine.cpp"],
+        extra_compile_args=["-D__HIP_PLATFORM_AMD__"],
+        # Link against the HIP runtime library
+        libraries=["amdhip64"], 
+    ))
+else:
+    print("[!] [CRAYON BUILD] HIPCC not found. Skipping AMD Backend.")
 
+# Read README for PyPI long description
+with open("README.md", "r", encoding="utf-8") as f:
+    long_description = f.read()
 
-def get_extension_modules():
-    """Define C++ extension modules."""
-    
-    extensions = []
-    
-    # Main AVX2 engine (Double-Array Trie)
-    # MUST USE RELATIVE PATHS for setuptools
-    engine_cpp = 'src/crayon/c_ext/engine.cpp'
-    
-    if os.path.exists(engine_cpp):
-        extensions.append(
-            Extension(
-                'crayon.c_ext.crayon_fast',
-                sources=[engine_cpp],
-                language='c++',
-            )
-        )
-    
-    # Legacy C Trie engine (fallback)
-    crayon_module_c = 'src/crayon/c_ext/crayon_module.c'
-    simd_ops_c = 'src/crayon/c_ext/simd_ops.c'
-    
-    if os.path.exists(crayon_module_c) and os.path.exists(simd_ops_c):
-        extensions.append(
-            Extension(
-                'crayon.c_ext._core',
-                sources=[crayon_module_c, simd_ops_c],
-                language='c',
-            )
-        )
-    
-    return extensions
-
-
-# Read long description from README
-def get_long_description():
-    readme_path = Path(__file__).parent / 'README.md'
-    if readme_path.exists():
-        return readme_path.read_text(encoding='utf-8')
-    return ''
-
-
-if __name__ == '__main__':
-    setup(
-        name='xerv-crayon',
-        version='2.0.3',
-        description='Production-grade tokenizer achieving >16M tokens/s via AVX2/SIMD optimizations.',
-        long_description=get_long_description(),
-        long_description_content_type='text/markdown',
-        author='Soham Pal',
-        author_email='botmaker583@gmail.com',
-        url='https://github.com/xerv/crayon',
-        license='MIT',
-        packages=find_packages('src'),
-        package_dir={'': 'src'},
-        ext_modules=get_extension_modules(),
-        cmdclass={'build_ext': AVX2BuildExt},
-        include_package_data=True,
-        package_data={
-            'crayon': [
-                'resources/dat/*.dat',
-                'resources/*.txt',
-                'resources/*.csv',
-                'c_ext/*.h',
-                'c_ext/*.c',
-                'c_ext/*.cpp',
-            ],
-        },
-        python_requires='>=3.10',
-        classifiers=[
-            'Development Status :: 5 - Production/Stable',
-            'Intended Audience :: Science/Research',
-            'Intended Audience :: Developers',
-            'License :: OSI Approved :: MIT License',
-            'Programming Language :: Python :: 3',
-            'Programming Language :: Python :: 3.10',
-            'Programming Language :: Python :: 3.11',
-            'Programming Language :: Python :: 3.12',
-            'Programming Language :: Python :: 3.13',
-            'Programming Language :: C',
-            'Programming Language :: C++',
-            'Topic :: Scientific/Engineering :: Artificial Intelligence',
-            'Topic :: Text Processing :: Linguistic',
-            'Operating System :: POSIX :: Linux',
-            'Operating System :: Microsoft :: Windows',
-            'Operating System :: MacOS',
-        ],
-        zip_safe=False,  # Required for C extensions
-    )
+setup(
+    name="xerv-crayon",
+    version="4.0.1",
+    description="The Omni-Backend Tokenizer (CPU/CUDA/ROCm)",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
+    url="https://github.com/Xerv-AI/crayon",
+    author="Xerv Research Engineering Division",
+    author_email="botmaker583@gmail.com",
+    classifiers=[
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Science/Research",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: C++",
+        "Topic :: Scientific/Engineering :: Artificial Intelligence",
+        "Topic :: Text Processing :: Linguistic",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX :: Linux",
+        "Operating System :: MacOS",
+    ],
+    packages=find_packages("src"),
+    package_dir={"": "src"},
+    ext_modules=ext_modules,
+    python_requires=">=3.10",
+)

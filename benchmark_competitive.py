@@ -112,35 +112,104 @@ def benchmark_tokenizer(name, tokenize_fn, load_fn=None, vocab_size=None):
 # ============================================================================
 # 1. XERV CRAYON (Lite Profile - 50k vocab)
 # ============================================================================
+# ============================================================================
+# 1. XERV CRAYON (Omni-Backend / Multi-Profile)
+# ============================================================================
 print("\n" + "="*50)
-print("XERV CRAYON")
+print("XERV CRAYON - OMNI-BACKEND SWEEP")
 print("="*50)
 
 try:
-    from crayon import CrayonVocab
+    from crayon.core.vocabulary import CrayonVocab
+    import glob
     
-    def load_crayon_lite():
-        global _crayon_vocab
-        _crayon_vocab = CrayonVocab.load_profile("code")
+    # 1. Identify Available Profiles
+    # Look in standard cache or local resources
+    profile_names = ["lite", "code", "science"]
     
-    load_crayon_lite()  # Pre-load for benchmark
+    # 2. Identify Available Backends
+    # We attempt to initialize each and check if it sticks
+    available_devices = []
     
-    if _crayon_vocab.fast_mode:
-        print("  [OK] Loaded with AVX2 engine")
-    else:
-        print("  [WARN] Loaded in fallback mode (no AVX2)")
+    # CPU is always available
+    available_devices.append("cpu")
     
-    results.append(benchmark_tokenizer(
-        "CRAYON (lite, 50k)",
-        lambda text: _crayon_vocab.tokenize(text),
-        load_fn=load_crayon_lite,
-        vocab_size=50000
-    ))
+    # Check CUDA
+    try:
+        from crayon.c_ext import crayon_cuda
+        available_devices.append("cuda")
+    except ImportError:
+        pass
         
+    # Check ROCm
+    try:
+        from crayon.c_ext import crayon_rocm
+        available_devices.append("rocm")
+    except ImportError:
+        pass
+
+    print(f"Detected Crayon Backends: {available_devices}")
+    
+    # 3. Run Sweep
+    for device in available_devices:
+        for profile in profile_names:
+            config_name = f"CRAYON ({device.upper()} - {profile})"
+            
+            # Helper to manage scope/GC
+            def make_runner(dev, prof):
+                # We initialize fresh for the load test, then keep for execution
+                vocab = None
+                
+                def load():
+                    nonlocal vocab
+                    vocab = CrayonVocab(device=dev)
+                    # Print hardware info for benchmark logs
+                    if dev == "cpu" and vocab._cpu_backend:
+                        print(f"    -> Hardware: {vocab._cpu_backend.get_hardware_info()}")
+                    elif dev == "cuda" and vocab._gpu_backend:
+                        print(f"    -> Hardware: {vocab._gpu_backend.get_hardware_info()}")
+                    elif dev == "rocm" and vocab._gpu_backend:
+                        print(f"    -> Hardware: {vocab._gpu_backend.get_hardware_info()}")
+                        
+                    try:
+                        vocab.load_profile(prof)
+                    except Exception:
+                        # Fallback for benchmark context if profiles aren't in ~/.cache yet
+                        local_path = os.path.join("src", "crayon", "resources", "dat", f"vocab_{prof}.dat")
+                        if os.path.exists(local_path):
+                            vocab.load_profile(local_path)
+                        else:
+                            raise
+                
+                def run(text):
+                    return vocab.tokenize(text)
+                
+                return load, run
+
+            try:
+                load_fn, run_fn = make_runner(device, profile)
+                
+                # Dry run to check if profile exists
+                try:
+                    load_fn()
+                except Exception as e:
+                    print(f"  Skipping {config_name}: Profile not found ({e})")
+                    continue
+
+                results.append(benchmark_tokenizer(
+                    config_name,
+                    run_fn,
+                    load_fn=load_fn,
+                    vocab_size="~250k" if profile != "lite" else "50k"
+                ))
+                
+            except Exception as e:
+                print(f"  Failed {config_name}: {e}")
+
 except ImportError as e:
-    print(f"  CRAYON not available: {e}")
+    print(f"  CRAYON core not available: {e}")
 except Exception as e:
-    print(f"  CRAYON load error: {e}")
+    print(f"  CRAYON sweep error: {e}")
 
 # ============================================================================
 # 2. OpenAI tiktoken
