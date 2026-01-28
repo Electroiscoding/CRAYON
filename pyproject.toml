@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xerv-crayon"
-version = "4.0.1"
-description = "The Omni-Backend Tokenizer (CPU/CUDA/ROCm)"
+version = "4.2.0"
+description = "Omni-Backend Tokenizer - CPU (AVX2/512), CUDA (NVIDIA), ROCm (AMD) with automatic hardware detection"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
@@ -17,6 +17,10 @@ keywords = [
     "nlp", 
     "simd", 
     "avx2", 
+    "avx512",
+    "cuda",
+    "rocm",
+    "gpu",
     "high-performance", 
     "zero-copy",
     "dat",
@@ -24,7 +28,10 @@ keywords = [
     "machine-learning",
     "deep-learning",
     "transformers",
-    "llm"
+    "llm",
+    "nvcuda",
+    "amd",
+    "nvidia"
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -42,7 +49,8 @@ classifiers = [
     "Topic :: Text Processing :: Linguistic",
     "Operating System :: POSIX :: Linux",
     "Operating System :: Microsoft :: Windows",
-    "Operating System :: MacOS"
+    "Operating System :: MacOS",
+    "Environment :: GPU :: NVIDIA CUDA",
 ]
 
 # Core dependencies (minimal for basic usage)
@@ -85,11 +93,13 @@ where = ["src"]
 [tool.setuptools.package-data]
 "crayon" = [
     "resources/dat/*.dat",
+    "resources/dat/*.json",
     "resources/*.txt",
     "resources/*.csv",
     "c_ext/*.h",
     "c_ext/*.c",
-    "c_ext/*.cpp"
+    "c_ext/*.cpp",
+    "c_ext/*.cu"
 ]
 
 [tool.pytest.ini_options]

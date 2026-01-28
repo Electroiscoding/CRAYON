@@ -16,10 +16,10 @@
 static int32_t *d_cuda_base = nullptr;
 static int32_t *d_cuda_check = nullptr;
 static int32_t *d_cuda_values = nullptr;
+static uint32_t cuda_trie_size = 0;
 static bool cuda_loaded = false;
-static cudaStream_t stream = nullptr;  // FIX: Async stream for overlap
+static cudaStream_t stream = nullptr;
 
-// FIX: Macro for hyper-safe CUDA calls - logs and propagates errors
 #define CHECK_CUDA_ERR(call) do { \
     cudaError_t err = (call); \
     if (err != cudaSuccess) { \
@@ -28,7 +28,6 @@ static cudaStream_t stream = nullptr;  // FIX: Async stream for overlap
     } \
 } while(0)
 
-// FIX: RAII for memory tracking (frees on scope exit if needed)
 struct CudaMemGuard {
     void** ptrs;
     int num;
@@ -36,26 +35,27 @@ struct CudaMemGuard {
     ~CudaMemGuard() { for(int i=0; i<num; i++) if(ptrs[i]) cudaFree(ptrs[i]); }
 };
 
-// --- KERNEL --- (Hyper-optimized: Shared mem + unroll)
+// --- KERNEL ---
 __global__ void tokenize_kernel_cuda(
     const int32_t* __restrict__ base,
     const int32_t* __restrict__ check,
     const int32_t* __restrict__ values,
-    const char* __restrict__ text_pool,  // FIX: Use __restrict__ everywhere for compiler hints
+    const char* __restrict__ text_pool,
     const int* __restrict__ offsets,
     int* out_tokens,
     int* out_counts,
     int n_sentences,
-    int max_capacity
+    int max_capacity,
+    uint32_t trie_size
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_sentences) return;
 
-    extern __shared__ char sh_text[];  // FIX: Shared mem for text chunk (faster access)
+    extern __shared__ char sh_text[];
     int start = offsets[idx];
     int end = offsets[idx+1];
-    int chunk_size = min(end - start, 1024);  // FIX: Load chunk to shared
-    for(int i=0; i<chunk_size; i+=blockDim.x) {  // Coalesced load
+    int chunk_size = min(end - start, 1024);
+    for(int i=0; i<chunk_size; i+=blockDim.x) {
         int tid = threadIdx.x + i;
         if (tid < chunk_size) sh_text[tid] = text_pool[start + tid];
     }
@@ -64,19 +64,18 @@ __global__ void tokenize_kernel_cuda(
     int node = 0;
     int count = 0;
     int write_ptr = idx * max_capacity;
-    int pos = 0;  // FIX: Relative to chunk
+    int pos = 0;
 
-    while (pos < chunk_size && count < max_capacity) {  // FIX: Bounds tight
-        int best_token = 1;  // FIX: Default to unk=1, not 0
+    while (pos < chunk_size && count < max_capacity) {
+        int best_token = 1;
         int best_len = 0;
         int curr = node;
         
-        // FIX: Loop unroll for speed (#pragma unroll 4) + continue partial node
 #pragma unroll 4
         for (int i = pos; i < chunk_size; ++i) {
-            uint8_t c = (uint8_t)sh_text[i];  // FIX: Cast explicit, shared mem
+            uint8_t c = (uint8_t)sh_text[i];
             int next = base[curr] + c;
-            if (next >= 0 && next < *d_cuda_check) {  // FIX: Bounds check on next
+            if (next >= 0 && (uint32_t)next < trie_size) {
                 if (check[next] != curr) break;
                 curr = next;
                 int val = values[curr];
@@ -84,10 +83,9 @@ __global__ void tokenize_kernel_cuda(
                     best_token = val;
                     best_len = (i - pos) + 1;
                 }
-                // FIX: Don't always reset node=0; carry partial for continuity (BPE-style)
                 node = (best_len > 0) ? 0 : curr;
             } else {
-                break;  // FIX: Early exit on invalid byte
+                break;
             }
         }
         
@@ -177,6 +175,7 @@ static PyObject* load_gpu(PyObject* self, PyObject* args) {
     CHECK_CUDA_ERR(cudaMemcpyAsync(d_cuda_values, arr_ptr + bytes*2, bytes, cudaMemcpyHostToDevice, stream));
     CHECK_CUDA_ERR(cudaStreamSynchronize(stream));  // FIX: Sync once
     
+    cuda_trie_size = size;
     cuda_loaded = true;
     // FIX: Telemetry return dict
     PyObject* res_dict = PyDict_New();
@@ -244,10 +243,10 @@ static PyObject* tokenize_batch_gpu(PyObject* self, PyObject* args) {
     int threads = 256;
     int blocks = (n + threads - 1) / threads;
     size_t sh_mem = 1024 * sizeof(char);  // For shared text
-    CHECK_CUDA_ERR(cudaFuncSetAttribute(tokenize_kernel_cuda, cudaFuncAttributePreferredShmemCarveout, 50));  // FIX: Tune shared
+    // CHECK_CUDA_ERR(cudaFuncSetAttribute(tokenize_kernel_cuda, cudaFuncAttributePreferredShmemCarveout, 50));
     tokenize_kernel_cuda<<<blocks, threads, sh_mem, stream>>>(
         d_cuda_base, d_cuda_check, d_cuda_values, 
-        d_text, d_offsets, d_out, d_counts, n, max_tok
+        d_text, d_offsets, d_out, d_counts, n, max_tok, cuda_trie_size
     );
     CHECK_CUDA_ERR(cudaGetLastError());  // FIX: Immediate kernel check
     CHECK_CUDA_ERR(cudaStreamSynchronize(stream));
