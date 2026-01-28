@@ -2,17 +2,12 @@
 XERV CRAYON SETUP - Production Omni-Backend Build System
 =========================================================
 
-Uses PyTorch's CUDAExtension for proper nvcc compilation on GPU systems.
-
-Backends:
-1. CPU (crayon_cpu) - Always built with AVX2/AVX-512
-2. CUDA (crayon_cuda) - Built if torch+CUDA available
-3. ROCm (crayon_rocm) - Built if hipcc available
+Uses PyTorch's CUDAExtension for reliable CUDA compilation.
+Falls back to CPU-only if PyTorch/CUDA not available.
 """
 
 import os
 import sys
-import subprocess
 import shutil
 from setuptools import setup, Extension, find_packages
 from setuptools.command.build_ext import build_ext
@@ -33,73 +28,38 @@ def log(msg: str, level: str = "INFO") -> None:
 
 
 # ============================================================================
-# DETECT PYTORCH CUDA AVAILABILITY
+# DETECT BUILD ENVIRONMENT
 # ============================================================================
 
-TORCH_AVAILABLE = False
-TORCH_CUDA_AVAILABLE = False
-
-try:
-    import torch
-    TORCH_AVAILABLE = True
-    TORCH_CUDA_AVAILABLE = torch.cuda.is_available()
-    log(f"PyTorch {torch.__version__} detected", "OK")
-    log(f"PyTorch CUDA: {TORCH_CUDA_AVAILABLE}", "OK" if TORCH_CUDA_AVAILABLE else "WARN")
-except ImportError:
-    log("PyTorch not found - will check for standalone nvcc", "WARN")
-
-
-# ============================================================================
-# DETECT STANDALONE NVCC (for non-PyTorch CUDA builds)
-# ============================================================================
-
-def find_nvcc() -> str | None:
-    """Find nvcc compiler."""
-    # Check common locations
-    cuda_home = os.environ.get("CUDA_HOME", os.environ.get("CUDA_PATH", "/usr/local/cuda"))
-    
-    candidates = [
-        shutil.which("nvcc"),
-        os.path.join(cuda_home, "bin", "nvcc"),
-        "/usr/local/cuda/bin/nvcc",
-        "/usr/local/cuda-12/bin/nvcc",
-        "/usr/local/cuda-11/bin/nvcc",
-    ]
-    
-    for path in candidates:
-        if path and os.path.exists(path):
-            return path
-    return None
-
-
-def find_hipcc() -> str | None:
-    """Find AMD hipcc compiler."""
-    rocm_home = os.environ.get("ROCM_HOME", "/opt/rocm")
-    candidates = [
-        shutil.which("hipcc"),
-        os.path.join(rocm_home, "bin", "hipcc"),
-    ]
-    for path in candidates:
-        if path and os.path.exists(path):
-            return path
-    return None
-
-
-NVCC_PATH = find_nvcc()
-HIPCC_PATH = find_hipcc()
 FORCE_CPU = os.environ.get("CRAYON_FORCE_CPU", "0") == "1"
 
-# Determine what to build
-BUILD_CUDA = (TORCH_CUDA_AVAILABLE or NVCC_PATH) and not FORCE_CPU
-BUILD_ROCM = HIPCC_PATH is not None and not FORCE_CPU
+# Check for PyTorch with CUDA
+TORCH_CUDA_AVAILABLE = False
+try:
+    import torch
+    from torch.utils.cpp_extension import CUDAExtension, BuildExtension, CUDA_HOME
+    TORCH_CUDA_AVAILABLE = torch.cuda.is_available() and CUDA_HOME is not None
+    if TORCH_CUDA_AVAILABLE:
+        log(f"PyTorch CUDA detected: {torch.version.cuda}", "OK")
+        log(f"CUDA_HOME: {CUDA_HOME}", "OK")
+    else:
+        log("PyTorch available but CUDA not detected", "WARN")
+except ImportError:
+    log("PyTorch not available, using standard build", "WARN")
+    CUDAExtension = None
+    BuildExtension = None
+    CUDA_HOME = None
 
-log(f"NVCC: {NVCC_PATH}" if NVCC_PATH else "NVCC not found", "OK" if NVCC_PATH else "WARN")
-log(f"Build CUDA: {BUILD_CUDA}")
-log(f"Build ROCm: {BUILD_ROCM}")
+# Check for HIP/ROCm
+HAS_ROCM = False
+ROCM_HOME = os.environ.get("ROCM_HOME", "/opt/rocm")
+if os.path.exists(os.path.join(ROCM_HOME, "bin", "hipcc")):
+    HAS_ROCM = True
+    log(f"ROCm detected: {ROCM_HOME}", "OK")
 
 
 # ============================================================================
-# EXTENSION MODULES
+# EXTENSION DEFINITIONS
 # ============================================================================
 
 ext_modules = []
@@ -107,106 +67,79 @@ ext_modules = []
 # CPU compile args
 if sys.platform == "win32":
     cpu_args = ["/O2", "/arch:AVX2", "/std:c++17"]
+    cpu_link = []
 elif sys.platform == "darwin":
     cpu_args = ["-O3", "-std=c++17", "-march=native"]
+    cpu_link = []
 else:
     cpu_args = ["-O3", "-std=c++17", "-fPIC", "-march=native", "-mavx2"]
+    cpu_link = []
+
 
 # --- CPU Extension (Always built) ---
 ext_modules.append(Extension(
     "crayon.c_ext.crayon_cpu",
     sources=["src/crayon/c_ext/cpu_engine.cpp"],
     extra_compile_args=cpu_args,
+    extra_link_args=cpu_link,
     language="c++",
 ))
 log("CPU extension configured")
 
-# --- CUDA Extension (via PyTorch CUDAExtension) ---
-if BUILD_CUDA and TORCH_AVAILABLE:
-    try:
-        from torch.utils.cpp_extension import CUDAExtension
-        
-        cuda_ext = CUDAExtension(
-            name="crayon.c_ext.crayon_cuda",
-            sources=["src/crayon/c_ext/gpu_engine_cuda.cu"],
-            extra_compile_args={
-                "cxx": ["-O3", "-std=c++17"],
-                "nvcc": [
-                    "-O3",
-                    "-std=c++17",
-                    "--use_fast_math",
-                    "-gencode=arch=compute_70,code=sm_70",  # V100
-                    "-gencode=arch=compute_75,code=sm_75",  # T4
-                    "-gencode=arch=compute_80,code=sm_80",  # A100
-                    "-gencode=arch=compute_86,code=sm_86",  # RTX 3090
-                    "--expt-relaxed-constexpr",
-                    "-allow-unsupported-compiler",
-                ],
-            },
-        )
-        ext_modules.append(cuda_ext)
-        log("CUDA extension configured (via PyTorch CUDAExtension)", "OK")
-    except Exception as e:
-        log(f"Failed to configure CUDA extension: {e}", "ERROR")
 
-# --- ROCm Extension ---
-if BUILD_ROCM:
-    rocm_home = os.environ.get("ROCM_HOME", "/opt/rocm")
+# --- CUDA Extension (via PyTorch if available) ---
+if TORCH_CUDA_AVAILABLE and not FORCE_CPU and CUDAExtension is not None:
+    cuda_ext = CUDAExtension(
+        name="crayon.c_ext.crayon_cuda",
+        sources=["src/crayon/c_ext/gpu_engine_cuda.cu"],
+        extra_compile_args={
+            "cxx": ["-O3", "-std=c++17"],
+            "nvcc": [
+                "-O3",
+                "-std=c++17",
+                "--expt-relaxed-constexpr",
+                "-gencode=arch=compute_70,code=sm_70",   # V100
+                "-gencode=arch=compute_75,code=sm_75",   # T4, RTX 2080
+                "-gencode=arch=compute_80,code=sm_80",   # A100
+                "-gencode=arch=compute_86,code=sm_86",   # RTX 3090
+            ],
+        },
+    )
+    ext_modules.append(cuda_ext)
+    log("CUDA extension configured (PyTorch CUDAExtension)", "OK")
+
+
+# --- ROCm Extension (if available) ---
+if HAS_ROCM and not FORCE_CPU:
     ext_modules.append(Extension(
         "crayon.c_ext.crayon_rocm",
         sources=["src/crayon/c_ext/rocm_engine.cpp"],
         libraries=["amdhip64"],
-        library_dirs=[os.path.join(rocm_home, "lib")],
-        runtime_library_dirs=[os.path.join(rocm_home, "lib")],
-        include_dirs=[os.path.join(rocm_home, "include")],
+        library_dirs=[os.path.join(ROCM_HOME, "lib")],
+        runtime_library_dirs=[os.path.join(ROCM_HOME, "lib")],
+        include_dirs=[os.path.join(ROCM_HOME, "include")],
         extra_compile_args=["-O3", "-std=c++17", "-fPIC", "-D__HIP_PLATFORM_AMD__"],
         language="c++",
     ))
-    log("ROCm extension configured", "OK")
+    log("ROCm extension configured")
 
 
 # ============================================================================
-# CUSTOM BUILD EXTENSION
+# CUSTOM BUILD COMMAND
 # ============================================================================
 
-class CrayonBuildExt(build_ext):
-    """Custom build_ext that uses PyTorch's BuildExtension for CUDA."""
-    
-    def build_extensions(self):
-        # Check if we have CUDA extensions
-        has_cuda_ext = any("crayon_cuda" in ext.name for ext in self.extensions)
-        
-        if has_cuda_ext and TORCH_AVAILABLE:
-            try:
-                from torch.utils.cpp_extension import BuildExtension
-                # Use PyTorch's BuildExtension for CUDA
-                torch_builder = BuildExtension.with_options(use_ninja=False)
-                torch_builder.build_extensions(self)
-                return
-            except Exception as e:
-                log(f"PyTorch BuildExtension failed: {e}", "ERROR")
-                # Fall back to standard build for non-CUDA extensions
-                self.extensions = [e for e in self.extensions if "crayon_cuda" not in e.name]
-        
-        # Standard build for CPU/ROCm
-        super().build_extensions()
+# Use PyTorch's BuildExtension if available, otherwise standard
+if BuildExtension is not None and TORCH_CUDA_AVAILABLE:
+    cmdclass = {"build_ext": BuildExtension}
+    log("Using PyTorch BuildExtension for CUDA compilation")
+else:
+    cmdclass = {}
+    log("Using standard setuptools build")
 
 
 # ============================================================================
 # SETUP
 # ============================================================================
-
-# Choose cmdclass
-if BUILD_CUDA and TORCH_AVAILABLE:
-    try:
-        from torch.utils.cpp_extension import BuildExtension
-        cmdclass = {"build_ext": BuildExtension.with_options(use_ninja=False)}
-        log("Using PyTorch BuildExtension")
-    except:
-        cmdclass = {"build_ext": CrayonBuildExt}
-else:
-    cmdclass = {"build_ext": CrayonBuildExt}
-
 
 setup(
     name="xerv-crayon",
@@ -224,9 +157,5 @@ setup(
     ext_modules=ext_modules,
     cmdclass=cmdclass,
     python_requires=">=3.10",
-    install_requires=[],
-    extras_require={
-        "cuda": ["torch>=2.0.0"],
-    },
     zip_safe=False,
 )
