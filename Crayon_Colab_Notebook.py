@@ -1,5 +1,5 @@
 """
-XERV CRAYON V4.2.8 - Production Omni-Backend Tokenizer
+XERV CRAYON V4.2.9 - Production Omni-Backend Tokenizer
 =======================================================
 Copy this ENTIRE script into a Google Colab cell and run it.
 
@@ -13,7 +13,7 @@ import os
 import time
 
 print("=" * 70)
-print("XERV CRAYON V4.2.8 INSTALLATION")
+print("XERV CRAYON V4.2.9 INSTALLATION")
 print("=" * 70)
 
 # ... (rest of the script is same until Verification)

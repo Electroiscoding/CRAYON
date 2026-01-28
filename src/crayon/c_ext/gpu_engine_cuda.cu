@@ -157,20 +157,19 @@ static PyObject* load_gpu(PyObject* self, PyObject* args) {
     char* arr_ptr = raw + 12;
     size_t bytes = size * sizeof(int32_t);
 
-    // FIX: Free old + guard
+    // FIX: Free old + guard (RAII handles actual free of old_ptrs upon exit)
     void* old_ptrs[3] = {d_cuda_base, d_cuda_check, d_cuda_values};
     CudaMemGuard guard(old_ptrs, 3);
-    if (cuda_loaded) {
-        CHECK_CUDA_ERR(cudaFree(d_cuda_base));
-        CHECK_CUDA_ERR(cudaFree(d_cuda_check));
-        CHECK_CUDA_ERR(cudaFree(d_cuda_values));
-    }
-
+    
+    // FIX: Remove manual free to prevent double-free with guard
+    
     // FIX: Async alloc + stream init
     if (!stream) CHECK_CUDA_ERR(cudaStreamCreate(&stream));
-    CHECK_CUDA_ERR(cudaMallocAsync(&d_cuda_base, bytes, stream));
-    CHECK_CUDA_ERR(cudaMallocAsync(&d_cuda_check, bytes, stream));
-    CHECK_CUDA_ERR(cudaMallocAsync(&d_cuda_values, bytes, stream));
+    
+    // Use standard cudaMalloc for maximum compatibility
+    CHECK_CUDA_ERR(cudaMalloc(&d_cuda_base, bytes));
+    CHECK_CUDA_ERR(cudaMalloc(&d_cuda_check, bytes));
+    CHECK_CUDA_ERR(cudaMalloc(&d_cuda_values, bytes));
 
     CHECK_CUDA_ERR(cudaMemcpyAsync(d_cuda_base, arr_ptr, bytes, cudaMemcpyHostToDevice, stream));
     CHECK_CUDA_ERR(cudaMemcpyAsync(d_cuda_check, arr_ptr + bytes, bytes, cudaMemcpyHostToDevice, stream));
