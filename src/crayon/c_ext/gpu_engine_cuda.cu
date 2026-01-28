@@ -50,8 +50,10 @@ __global__ void tokenize_kernel_cuda(
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_sentences) return;
-
-    extern __shared__ char sh_text[];
+    
+    // FIX: Static shared memory is safer/stable
+    __shared__ char sh_text[1024];
+    
     int start = offsets[idx];
     int end = offsets[idx+1];
     int chunk_size = min(end - start, 1024);
@@ -195,6 +197,12 @@ static PyObject* tokenize_batch_gpu(PyObject* self, PyObject* args) {
     
     int n = PyList_Size(list_obj);
     if (n == 0) return PyList_New(0);
+    
+    // FIX: Safety Check
+    if (!cuda_loaded || !stream) {
+        PyErr_SetString(PyExc_RuntimeError, "CUDA Engine not loaded or stream invalid. Call load_profile() first.");
+        return NULL;
+    }
 
     // FIX: Pre-scan for lengths + dynamic max_tok
     std::vector<Py_ssize_t> lens(n);
@@ -242,9 +250,8 @@ static PyObject* tokenize_batch_gpu(PyObject* self, PyObject* args) {
     // FIX: Occupancy calc + launch
     int threads = 256;
     int blocks = (n + threads - 1) / threads;
-    size_t sh_mem = 1024 * sizeof(char);  // For shared text
-    // CHECK_CUDA_ERR(cudaFuncSetAttribute(tokenize_kernel_cuda, cudaFuncAttributePreferredShmemCarveout, 50));
-    tokenize_kernel_cuda<<<blocks, threads, sh_mem, stream>>>(
+    // sh_mem = 0 because we use static __shared__ now
+    tokenize_kernel_cuda<<<blocks, threads, 0, stream>>>(
         d_cuda_base, d_cuda_check, d_cuda_values, 
         d_text, d_offsets, d_out, d_counts, n, max_tok, cuda_trie_size
     );

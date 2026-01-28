@@ -714,6 +714,8 @@ class CrayonVocab:
                     raw_bytes = self._dat_mem_ref[:]
                     result = self._gpu_backend.load_gpu(raw_bytes)
                     self._profile_loaded = True
+                    # ALSO LOAD CPU FOR FALLBACK
+                    self._cpu_backend.load_dat(self._dat_mem_ref)
                     _logger.debug("Profile loaded on CUDA: %s (result: %s)", os.path.basename(path), result)
                     return
                 except Exception as e:
@@ -730,6 +732,8 @@ class CrayonVocab:
                     raw_bytes = self._dat_mem_ref[:]
                     self._gpu_backend.load_rocm(raw_bytes)
                     self._profile_loaded = True
+                    # ALSO LOAD CPU FOR FALLBACK
+                    self._cpu_backend.load_dat(self._dat_mem_ref)
                     _logger.debug("Profile loaded on ROCm: %s", os.path.basename(path))
                     return
                 except Exception as e:
