@@ -1,22 +1,16 @@
 """
-XERV CRAYON SETUP - Omni-Backend Build System
-==============================================
+XERV CRAYON SETUP - Production Omni-Backend Build System
+=========================================================
 
-This setup.py handles:
+Handles:
 1. CPU Backend (crayon_cpu) - Always built with AVX2/AVX-512
-2. CUDA Backend (crayon_cuda) - Built if nvcc is available
+2. CUDA Backend (crayon_cuda) - Built if nvcc is available  
 3. ROCm Backend (crayon_rocm) - Built if hipcc is available
 
-Build Process:
-    pip install .                    # Auto-detect and build available backends
-    pip install -e .                 # Editable install for development
-    pip install --no-build-isolation .  # Force local build
-
-Environment Variables:
-    CRAYON_FORCE_CPU=1       # Skip GPU backend compilation
-    CRAYON_CUDA_ARCH=sm_75   # Override CUDA architecture (e.g., sm_75 for T4)
-    CUDA_HOME=/usr/local/cuda # Custom CUDA path
-    ROCM_HOME=/opt/rocm      # Custom ROCm path
+The CUDA compilation works by:
+1. Detecting nvcc at setup time
+2. Pre-compiling .cu files to .o using nvcc subprocess
+3. Linking the .o into a Python extension
 """
 
 import os
@@ -32,17 +26,15 @@ from setuptools.command.build_ext import build_ext
 # VERSION
 # ============================================================================
 
-VERSION = "4.2.2"
+VERSION = "4.2.3"
 
 # ============================================================================
 # LOGGING
 # ============================================================================
 
 def log(msg: str, level: str = "INFO") -> None:
-    """Print build status messages."""
     emoji = {"INFO": "[*]", "WARN": "[!]", "ERROR": "[X]", "OK": "[+]"}.get(level, "")
-    sys.stderr.write(f"[CRAYON] {emoji} {msg}\n")
-    sys.stderr.flush()
+    print(f"[CRAYON-BUILD] {emoji} {msg}", flush=True)
 
 
 # ============================================================================
@@ -50,7 +42,6 @@ def log(msg: str, level: str = "INFO") -> None:
 # ============================================================================
 
 def find_executable(names: list, search_paths: list = None) -> str | None:
-    """Find an executable in PATH or specified paths."""
     for name in names:
         found = shutil.which(name)
         if found:
@@ -63,187 +54,151 @@ def find_executable(names: list, search_paths: list = None) -> str | None:
     return None
 
 
-def get_nvcc_path() -> str | None:
-    """Find NVIDIA CUDA compiler."""
+def get_cuda_home() -> str:
     cuda_home = os.environ.get("CUDA_HOME", os.environ.get("CUDA_PATH", ""))
-    search_paths = [
-        cuda_home,
-        "/usr/local/cuda",
-        "/usr/local/cuda-12",
-        "/usr/local/cuda-11",
-        "/opt/cuda",
-        "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.0",
-        "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v11.8",
-    ]
+    if cuda_home and os.path.exists(cuda_home):
+        return cuda_home
+    for path in ["/usr/local/cuda", "/usr/local/cuda-12", "/usr/local/cuda-11", "/opt/cuda"]:
+        if os.path.exists(os.path.join(path, "bin", "nvcc")):
+            return path
+    return "/usr/local/cuda"
+
+
+def get_nvcc_path() -> str | None:
+    cuda_home = get_cuda_home()
+    search_paths = [cuda_home, "/usr/local/cuda", "/usr/local/cuda-12", "/usr/local/cuda-11"]
     return find_executable(["nvcc", "nvcc.exe"], search_paths)
 
 
 def get_hipcc_path() -> str | None:
-    """Find AMD ROCm HIP compiler."""
-    rocm_home = os.environ.get("ROCM_HOME", os.environ.get("HIP_PATH", ""))
-    search_paths = [
-        rocm_home,
-        "/opt/rocm",
-        "/opt/rocm-5.7.0",
-        "/opt/rocm-6.0.0",
-    ]
+    rocm_home = os.environ.get("ROCM_HOME", "/opt/rocm")
+    search_paths = [rocm_home, "/opt/rocm", "/opt/rocm-6.0.0", "/opt/rocm-5.7.0"]
     return find_executable(["hipcc"], search_paths)
 
 
-# Detect compilers
-NVCC_BIN = get_nvcc_path()
-HIPCC_BIN = get_hipcc_path()
-HAS_NVCC = NVCC_BIN is not None and not os.environ.get("CRAYON_FORCE_CPU")
-HAS_HIPCC = HIPCC_BIN is not None and not os.environ.get("CRAYON_FORCE_CPU")
+NVCC_PATH = get_nvcc_path()
+HIPCC_PATH = get_hipcc_path()
+CUDA_HOME = get_cuda_home()
+FORCE_CPU = os.environ.get("CRAYON_FORCE_CPU", "0") == "1"
 
-if HAS_NVCC:
-    log(f"CUDA compiler found: {NVCC_BIN}", "OK")
-else:
-    log("CUDA compiler not found - CUDA backend will not be built", "WARN")
+HAS_NVCC = NVCC_PATH is not None and not FORCE_CPU
+HAS_HIPCC = HIPCC_PATH is not None and not FORCE_CPU
 
-if HAS_HIPCC:
-    log(f"ROCm HIP compiler found: {HIPCC_BIN}", "OK")
-else:
-    log("ROCm HIP compiler not found - AMD backend will not be built", "WARN")
+log(f"CUDA Home: {CUDA_HOME}")
+log(f"NVCC Path: {NVCC_PATH}" if NVCC_PATH else "NVCC not found", "OK" if NVCC_PATH else "WARN")
+log(f"HIPCC Path: {HIPCC_PATH}" if HIPCC_PATH else "HIPCC not found", "OK" if HIPCC_PATH else "WARN")
 
 
 # ============================================================================
-# CUDA UTILITIES
+# CUDA COMPILATION FUNCTION
 # ============================================================================
 
-def get_cuda_home() -> str:
-    """Get CUDA installation directory."""
-    cuda_home = os.environ.get("CUDA_HOME", os.environ.get("CUDA_PATH", ""))
-    if cuda_home and os.path.exists(cuda_home):
-        return cuda_home
+def compile_cuda_to_object(cu_file: str, output_dir: str) -> str | None:
+    """Compile a CUDA .cu file to a .o object file using nvcc."""
+    if not NVCC_PATH:
+        return None
     
-    # Common locations
-    for path in ["/usr/local/cuda", "/opt/cuda", "/usr"]:
-        if os.path.exists(os.path.join(path, "include", "cuda.h")):
-            return path
+    os.makedirs(output_dir, exist_ok=True)
     
-    return "/usr/local/cuda"
-
-
-def get_cuda_include_dirs() -> list:
-    """Get CUDA include directories."""
-    cuda_home = get_cuda_home()
-    dirs = [os.path.join(cuda_home, "include")]
-    return [d for d in dirs if os.path.exists(d)]
-
-
-def get_cuda_library_dirs() -> list:
-    """Get CUDA library directories."""
-    cuda_home = get_cuda_home()
-    dirs = []
-    for libdir in ["lib64", "lib", "lib/x64"]:
-        path = os.path.join(cuda_home, libdir)
-        if os.path.exists(path):
-            dirs.append(path)
-    return dirs
-
-
-# ============================================================================
-# CUSTOM BUILD EXTENSION FOR CUDA
-# ============================================================================
-
-class CUDABuildExt(build_ext):
-    """Custom build_ext that handles CUDA (.cu) compilation via nvcc."""
+    obj_file = os.path.join(output_dir, os.path.basename(cu_file).replace(".cu", ".o"))
     
-    def build_extensions(self):
-        # Save original compiler
-        original_compile = self.compiler.compile
-        original_link = self.compiler.link_shared_object
-        
-        # Check if we need CUDA compilation
-        cuda_extensions = [e for e in self.extensions if any(
-            s.endswith('.cu') for s in e.sources
-        )]
-        
-        if cuda_extensions and HAS_NVCC:
-            log("Configuring CUDA compilation...")
-            
-            # Wrap compiler to handle .cu files
-            def custom_compile(sources, output_dir=None, macros=None, include_dirs=None,
-                             debug=0, extra_preargs=None, extra_postargs=None, depends=None):
-                cu_sources = [s for s in sources if s.endswith('.cu')]
-                cc_sources = [s for s in sources if not s.endswith('.cu')]
-                
-                objects = []
-                
-                # Compile CUDA files with nvcc
-                if cu_sources:
-                    for cu_src in cu_sources:
-                        obj = self._compile_cuda(cu_src, output_dir, include_dirs)
-                        if obj:
-                            objects.append(obj)
-                
-                # Compile regular C/C++ files normally
-                if cc_sources:
-                    cc_objects = original_compile(cc_sources, output_dir, macros, include_dirs,
-                                                 debug, extra_preargs, extra_postargs, depends)
-                    objects.extend(cc_objects)
-                
-                return objects
-            
-            self.compiler.compile = custom_compile
-        
-        # Build all extensions
-        super().build_extensions()
+    # Get Python include directory
+    python_include = sysconfig.get_path("include")
+    cuda_include = os.path.join(CUDA_HOME, "include")
     
-    def _compile_cuda(self, source, output_dir, include_dirs):
-        """Compile a .cu file using nvcc."""
-        obj_ext = ".obj" if sys.platform == "win32" else ".o"
-        obj_name = os.path.splitext(os.path.basename(source))[0] + obj_ext
-        
-        if output_dir is None:
-            output_dir = self.build_temp
-        
-        os.makedirs(output_dir, exist_ok=True)
-        obj_path = os.path.join(output_dir, obj_name)
-        
-        # Build nvcc command
-        includes = [sysconfig.get_path("include")]
-        includes.extend(get_cuda_include_dirs())
-        if include_dirs:
-            includes.extend(include_dirs)
-        include_flags = [f"-I{d}" for d in includes if d and os.path.exists(d)]
-        
-        # Compiler flags
-        flags = ["-O3", "-c", "-std=c++17", "-Xcompiler", "-fPIC"]
-        
-        # GPU architectures - Tesla T4 (7.5), V100 (7.0), A100 (8.0), H100 (9.0)
-        arch_env = os.environ.get("CRAYON_CUDA_ARCH")
-        if arch_env:
-            flags.append(f"-arch={arch_env}")
-        else:
-            # Support all common Colab/Cloud GPUs
-            flags.extend([
-                "-gencode=arch=compute_70,code=sm_70",   # V100
-                "-gencode=arch=compute_75,code=sm_75",   # T4, RTX 2080
-                "-gencode=arch=compute_80,code=sm_80",   # A100
-                "-gencode=arch=compute_86,code=sm_86",   # RTX 3090
-            ])
-        
-        if sys.platform != "win32":
-            flags.append("-allow-unsupported-compiler")
-        
-        cmd = [NVCC_BIN, source, "-o", obj_path] + flags + include_flags
-        log(f"Compiling CUDA: {os.path.basename(source)}")
-        
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-            if result.returncode != 0:
-                log(f"CUDA compilation failed:\n{result.stderr}", "ERROR")
-                return None
-            log(f"CUDA compilation successful: {obj_name}", "OK")
-            return obj_path
-        except subprocess.TimeoutExpired:
-            log("CUDA compilation timed out", "ERROR")
+    # Build nvcc command
+    cmd = [
+        NVCC_PATH,
+        "-c", cu_file,
+        "-o", obj_file,
+        "-O3",
+        "-std=c++17",
+        "-Xcompiler", "-fPIC",
+        "-I", python_include,
+        "-I", cuda_include,
+        # Multi-arch for T4, V100, A100, RTX 3090
+        "-gencode=arch=compute_70,code=sm_70",
+        "-gencode=arch=compute_75,code=sm_75",
+        "-gencode=arch=compute_80,code=sm_80",
+        "-gencode=arch=compute_86,code=sm_86",
+        "-allow-unsupported-compiler",
+        "--compiler-options", "-w",  # Suppress warnings
+    ]
+    
+    log(f"Compiling CUDA: {cu_file}")
+    log(f"Command: {' '.join(cmd)}")
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            log(f"NVCC stderr: {result.stderr}", "ERROR")
             return None
-        except Exception as e:
-            log(f"CUDA compilation error: {e}", "ERROR")
-            return None
+        log(f"CUDA compiled: {obj_file}", "OK")
+        return obj_file
+    except subprocess.TimeoutExpired:
+        log("CUDA compilation timed out", "ERROR")
+        return None
+    except Exception as e:
+        log(f"CUDA compilation failed: {e}", "ERROR")
+        return None
+
+
+# ============================================================================
+# CUSTOM BUILD EXTENSION
+# ============================================================================
+
+class CrayonBuildExt(build_ext):
+    """Custom build_ext that pre-compiles CUDA files with nvcc."""
+    
+    def run(self):
+        # Pre-compile CUDA if available
+        if HAS_NVCC:
+            cuda_src = os.path.join("src", "crayon", "c_ext", "gpu_engine_cuda.cu")
+            if os.path.exists(cuda_src):
+                log("=" * 60)
+                log("STARTING CUDA COMPILATION")
+                log("=" * 60)
+                
+                obj_file = compile_cuda_to_object(cuda_src, self.build_temp)
+                
+                if obj_file and os.path.exists(obj_file):
+                    # Find the CUDA extension and configure it
+                    for ext in self.extensions:
+                        if "crayon_cuda" in ext.name:
+                            ext.extra_objects = [obj_file]
+                            ext.library_dirs = [os.path.join(CUDA_HOME, "lib64")]
+                            ext.runtime_library_dirs = [os.path.join(CUDA_HOME, "lib64")]
+                            ext.libraries = ["cudart"]
+                            ext.include_dirs = [
+                                os.path.join(CUDA_HOME, "include"),
+                                sysconfig.get_path("include"),
+                            ]
+                            log("CUDA extension configured with compiled object", "OK")
+                else:
+                    log("CUDA compilation failed, removing CUDA extension", "ERROR")
+                    self.extensions = [e for e in self.extensions if "crayon_cuda" not in e.name]
+            else:
+                log(f"CUDA source not found: {cuda_src}", "WARN")
+        
+        # Now run the standard build
+        super().run()
+    
+    def build_extension(self, ext):
+        # For CUDA extension, we need a dummy source since the real code is in the .o file
+        if "crayon_cuda" in ext.name and ext.extra_objects:
+            # Create a minimal C++ stub that just includes Python.h
+            stub_dir = os.path.join(self.build_temp, "cuda_stub")
+            os.makedirs(stub_dir, exist_ok=True)
+            stub_file = os.path.join(stub_dir, "cuda_stub.cpp")
+            
+            with open(stub_file, "w") as f:
+                f.write('// Stub - real implementation in linked .o file\n')
+                f.write('#include <Python.h>\n')
+                f.write('// PyInit_crayon_cuda is defined in gpu_engine_cuda.o\n')
+            
+            ext.sources = [stub_file]
+        
+        super().build_extension(ext)
 
 
 # ============================================================================
@@ -252,57 +207,51 @@ class CUDABuildExt(build_ext):
 
 ext_modules = []
 
-# Get Python include for extensions
-python_include = sysconfig.get_path("include")
-
-# --- CPU Extension (Always built) ---
-cpu_compile_args = []
-cpu_link_args = []
-
+# CPU compile args
 if sys.platform == "win32":
-    cpu_compile_args = ["/O2", "/arch:AVX2", "/std:c++17"]
+    cpu_args = ["/O2", "/arch:AVX2", "/std:c++17"]
 elif sys.platform == "darwin":
-    cpu_compile_args = ["-O3", "-std=c++17", "-march=native"]
+    cpu_args = ["-O3", "-std=c++17", "-march=native"]
 else:
-    cpu_compile_args = ["-O3", "-std=c++17", "-fPIC", "-march=native", "-mavx2"]
+    cpu_args = ["-O3", "-std=c++17", "-fPIC", "-march=native", "-mavx2"]
 
+# --- CPU Extension (Always) ---
 ext_modules.append(Extension(
     "crayon.c_ext.crayon_cpu",
     sources=["src/crayon/c_ext/cpu_engine.cpp"],
-    extra_compile_args=cpu_compile_args,
-    extra_link_args=cpu_link_args,
+    extra_compile_args=cpu_args,
     language="c++",
 ))
 log("CPU extension configured")
 
-# --- CUDA Extension (Optional) ---
+# --- CUDA Extension (if nvcc available) ---
 if HAS_NVCC:
+    # Note: sources will be replaced with stub in build_extension
     cuda_ext = Extension(
         "crayon.c_ext.crayon_cuda",
-        sources=["src/crayon/c_ext/gpu_engine_cuda.cu"],  # nvcc will compile this
+        sources=[],  # Will be set during build
         libraries=["cudart"],
-        library_dirs=get_cuda_library_dirs(),
-        runtime_library_dirs=get_cuda_library_dirs() if sys.platform != "win32" else [],
-        include_dirs=get_cuda_include_dirs() + [python_include],
+        library_dirs=[os.path.join(CUDA_HOME, "lib64")],
+        runtime_library_dirs=[os.path.join(CUDA_HOME, "lib64")],
+        include_dirs=[os.path.join(CUDA_HOME, "include")],
         language="c++",
     )
     ext_modules.append(cuda_ext)
     log("CUDA extension configured (will compile with nvcc)")
 
-# --- ROCm Extension (Optional) ---
+# --- ROCm Extension (if hipcc available) ---
 if HAS_HIPCC:
     rocm_home = os.environ.get("ROCM_HOME", "/opt/rocm")
-    rocm_ext = Extension(
+    ext_modules.append(Extension(
         "crayon.c_ext.crayon_rocm",
         sources=["src/crayon/c_ext/rocm_engine.cpp"],
         libraries=["amdhip64"],
         library_dirs=[os.path.join(rocm_home, "lib")],
         runtime_library_dirs=[os.path.join(rocm_home, "lib")],
-        include_dirs=[os.path.join(rocm_home, "include"), python_include],
+        include_dirs=[os.path.join(rocm_home, "include")],
         extra_compile_args=["-O3", "-std=c++17", "-fPIC", "-D__HIP_PLATFORM_AMD__"],
         language="c++",
-    )
-    ext_modules.append(rocm_ext)
+    ))
     log("ROCm extension configured")
 
 
@@ -324,7 +273,7 @@ setup(
         "crayon.c_ext": ["*.h", "*.c", "*.cpp", "*.cu"],
     },
     ext_modules=ext_modules,
-    cmdclass={"build_ext": CUDABuildExt},
+    cmdclass={"build_ext": CrayonBuildExt},
     python_requires=">=3.10",
     zip_safe=False,
 )

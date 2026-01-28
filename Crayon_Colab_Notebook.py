@@ -1,107 +1,143 @@
 """
-XERV CRAYON V4.2.2 - Omni-Backend Tokenizer
-============================================
-Copy this entire file into Google Colab and run all cells.
-Works on CPU, NVIDIA GPU (T4/V100/A100), and AMD GPU.
+XERV CRAYON V4.2.3 - Omni-Backend Tokenizer
+=============================================
+Copy this ENTIRE script into a Google Colab cell and run it.
 
-IMPORTANT: Enable GPU runtime for best performance:
-Runtime -> Change runtime type -> GPU
+IMPORTANT: Enable GPU runtime first:
+Runtime -> Change runtime type -> GPU (T4/V100/A100)
 """
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CELL 1: INSTALL CRAYON (ALWAYS BUILDS FROM SOURCE FOR GPU SUPPORT)
+# CELL 1: CLEAN INSTALL FROM SOURCE (FORCES CUDA COMPILATION)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 import subprocess
 import sys
 import os
 
-print("Detecting hardware...")
+print("=" * 70)
+print("XERV CRAYON INSTALLATION")
+print("=" * 70)
+
+print("\n[1/5] Detecting GPU hardware...")
 try:
-    result = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+    result = subprocess.run(["nvidia-smi", "--query-gpu=name,compute_cap", "--format=csv,noheader"],
                            capture_output=True, text=True, timeout=10)
     if result.returncode == 0:
-        gpu_name = result.stdout.strip()
-        print(f"GPU Found: {gpu_name}")
+        gpu_info = result.stdout.strip()
+        print(f"      GPU: {gpu_info}")
+        has_gpu = True
     else:
-        gpu_name = None
-        print("No NVIDIA GPU detected")
+        print("      No NVIDIA GPU detected")
+        has_gpu = False
 except:
-    gpu_name = None
-    print("No NVIDIA GPU detected")
+    print("      No NVIDIA GPU detected")
+    has_gpu = False
 
-print("Installing Crayon from source (with GPU compilation if available)...")
-os.system("rm -rf /tmp/crayon 2>/dev/null")
-os.system("git clone --depth 1 https://github.com/Electroiscoding/CRAYON.git /tmp/crayon")
-subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-build-isolation", "/tmp/crayon"])
+print("\n[2/5] Checking CUDA compiler...")
+nvcc_check = subprocess.run(["which", "nvcc"], capture_output=True, text=True)
+if nvcc_check.returncode == 0:
+    nvcc_path = nvcc_check.stdout.strip()
+    print(f"      NVCC found: {nvcc_path}")
+    nvcc_version = subprocess.run([nvcc_path, "--version"], capture_output=True, text=True)
+    for line in nvcc_version.stdout.split("\n"):
+        if "release" in line.lower():
+            print(f"      {line.strip()}")
+else:
+    print("      NVCC not found - CUDA backend will not be available")
+
+print("\n[3/5] Removing old installations...")
+os.system("pip uninstall -y xerv-crayon crayon 2>/dev/null")
+os.system("rm -rf /tmp/crayon ~/.cache/pip/wheels/*crayon* 2>/dev/null")
+
+print("\n[4/5] Cloning latest source from GitHub...")
+os.system("rm -rf /tmp/crayon")
+clone_result = os.system("git clone --depth 1 https://github.com/Electroiscoding/CRAYON.git /tmp/crayon")
+if clone_result != 0:
+    print("      ERROR: Git clone failed!")
+    sys.exit(1)
+
+print("\n[5/5] Building and installing (with CUDA compilation)...")
+print("      This may take 1-2 minutes on first run...")
+print("-" * 70)
+
+build_result = subprocess.run(
+    [sys.executable, "-m", "pip", "install", "-v", "--no-build-isolation", "/tmp/crayon"],
+    capture_output=False
+)
+
+print("-" * 70)
+
+if build_result.returncode != 0:
+    print("\nERROR: Installation failed!")
+    sys.exit(1)
+
+print("\n" + "=" * 70)
+print("INSTALLATION COMPLETE")
+print("=" * 70)
 
 import crayon
-print(f"Crayon v{crayon.get_version()} installed")
+print(f"\nCrayon Version: {crayon.get_version()}")
 backends = crayon.check_backends()
-print(f"Available backends: {backends}")
+print(f"Available Backends: {backends}")
 
-if gpu_name and not backends.get("cuda"):
-    print("WARNING: GPU detected but CUDA backend not available.")
-    print("This may be due to compilation issues. Check build logs above.")
+if has_gpu and not backends.get("cuda"):
+    print("\nWARNING: GPU detected but CUDA backend not available!")
+    print("Check the build output above for CUDA compilation errors.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CELL 2: INITIALIZE TOKENIZER
+# CELL 2: INITIALIZE AND TEST
 # ═══════════════════════════════════════════════════════════════════════════════
 
 from crayon import CrayonVocab
+
+print("\n" + "=" * 70)
+print("TOKENIZER TEST")
+print("=" * 70)
 
 vocab = CrayonVocab(device="auto")
 vocab.load_profile("lite")
 
 info = vocab.get_info()
-print(f"Active Device: {info['device'].upper()}")
+print(f"\nActive Device: {info['device'].upper()}")
 print(f"Backend: {info['backend']}")
 print(f"Vocabulary Size: {vocab.vocab_size:,} tokens")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CELL 3: BASIC TOKENIZATION
-# ═══════════════════════════════════════════════════════════════════════════════
-
 text = "Hello, world! Crayon is a high-performance tokenizer."
 tokens = vocab.tokenize(text)
-
-print(f"Input: {text}")
+print(f"\nTest Input: {text}")
 print(f"Tokens: {tokens}")
 print(f"Token Count: {len(tokens)}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CELL 4: LATENCY BENCHMARK (SINGLE STRING)
+# CELL 3: BENCHMARKS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 import time
 
-text = "The quick brown fox jumps over the lazy dog."
-iterations = 10000
-
-for _ in range(100):
-    vocab.tokenize(text)
-
-start = time.perf_counter()
-for _ in range(iterations):
-    vocab.tokenize(text)
-elapsed = time.perf_counter() - start
-
-latency_us = (elapsed / iterations) * 1_000_000
-print(f"Single-String Latency: {latency_us:.2f} microseconds")
-print(f"Calls per Second: {iterations / elapsed:,.0f}")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CELL 5: BATCH THROUGHPUT BENCHMARK
-# ═══════════════════════════════════════════════════════════════════════════════
+print("\n" + "=" * 70)
+print("PERFORMANCE BENCHMARKS")
+print("=" * 70)
 
 base_text = "The quick brown fox jumps over the lazy dog."
 
-print("\nBatch Throughput Results:")
-print("-" * 60)
+print("\n--- Latency Test (Single String) ---")
+iterations = 10000
+for _ in range(100):
+    vocab.tokenize(base_text)
+start = time.perf_counter()
+for _ in range(iterations):
+    vocab.tokenize(base_text)
+elapsed = time.perf_counter() - start
+print(f"Latency: {(elapsed/iterations)*1e6:.2f} microseconds/call")
+print(f"Throughput: {iterations/elapsed:,.0f} calls/second")
+
+print("\n--- Batch Throughput Test ---")
+print(f"{'Batch Size':>12} | {'Docs/sec':>14} | {'Tokens/sec':>16}")
+print("-" * 50)
 
 for batch_size in [100, 1000, 10000, 50000]:
     batch = [base_text] * batch_size
-    
     vocab.tokenize(batch[:10])
     
     start = time.time()
@@ -109,49 +145,44 @@ for batch_size in [100, 1000, 10000, 50000]:
     duration = time.time() - start
     
     total_tokens = sum(len(r) for r in results)
-    docs_per_sec = batch_size / duration
-    tokens_per_sec = total_tokens / duration
-    
-    print(f"Batch {batch_size:>6}: {docs_per_sec:>12,.0f} docs/sec | {tokens_per_sec:>14,.0f} tokens/sec")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CELL 6: GPU STRESS TEST (IF AVAILABLE)
-# ═══════════════════════════════════════════════════════════════════════════════
+    docs_sec = batch_size / duration
+    toks_sec = total_tokens / duration
+    print(f"{batch_size:>12,} | {docs_sec:>14,.0f} | {toks_sec:>16,.0f}")
 
 if vocab.device != "cpu":
-    print(f"\nGPU Stress Test ({vocab.device.upper()}):")
-    print("-" * 60)
-    
-    for batch_size in [10000, 50000, 100000]:
+    print(f"\n--- GPU Stress Test ({vocab.device.upper()}) ---")
+    for batch_size in [100000, 500000]:
         batch = [base_text] * batch_size
-        
         start = time.time()
         results = vocab.tokenize(batch)
         duration = time.time() - start
-        
         total_tokens = sum(len(r) for r in results)
-        print(f"Batch {batch_size:>6}: {batch_size/duration:>12,.0f} docs/sec | {total_tokens/duration:>14,.0f} tokens/sec in {duration:.3f}s")
-else:
-    print("\nGPU stress test skipped (running on CPU)")
-    print("To enable GPU: Runtime -> Change runtime type -> GPU")
+        print(f"{batch_size:>12,} docs in {duration:.3f}s = {batch_size/duration:,.0f} docs/sec, {total_tokens/duration:,.0f} tokens/sec")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CELL 7: ENCODE/DECODE ROUND-TRIP
+# CELL 4: ROUND-TRIP VERIFICATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-original = "Hello, Crayon!"
-tokens = vocab.tokenize(original)
-decoded = vocab.decode(tokens)
+print("\n" + "=" * 70)
+print("ENCODE/DECODE VERIFICATION")
+print("=" * 70)
 
-print(f"\nRound-Trip Test:")
-print(f"  Original: {original}")
-print(f"  Tokens:   {tokens}")
-print(f"  Decoded:  {decoded}")
-print(f"  Match:    {original == decoded}")
+test_strings = [
+    "Hello, Crayon!",
+    "The quick brown fox jumps over the lazy dog.",
+    "def forward(self, x): return torch.relu(x)",
+]
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CELL 8: CLEANUP
-# ═══════════════════════════════════════════════════════════════════════════════
+all_passed = True
+for s in test_strings:
+    tokens = vocab.tokenize(s)
+    decoded = vocab.decode(tokens)
+    passed = s == decoded
+    all_passed = all_passed and passed
+    status = "PASS" if passed else "FAIL"
+    print(f"[{status}] '{s[:40]}...' -> {len(tokens)} tokens")
+
+print(f"\nAll tests passed: {all_passed}")
 
 vocab.close()
 print("\nDone!")
