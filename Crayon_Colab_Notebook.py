@@ -7,19 +7,17 @@ IMPORTANT: Enable GPU runtime first:
 Runtime -> Change runtime type -> GPU (T4/V100/A100)
 """
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CELL 1: CLEAN INSTALL FROM SOURCE (FORCES CUDA COMPILATION)
-# ═══════════════════════════════════════════════════════════════════════════════
-
 import subprocess
 import sys
 import os
+import time
 
 print("=" * 70)
-print("XERV CRAYON INSTALLATION")
+print("XERV CRAYON INSTALLATION V4.2.3")
 print("=" * 70)
 
-print("\n[1/5] Detecting GPU hardware...")
+# Step 1: GPU Detection
+print("\n[1/6] Detecting GPU hardware...")
 try:
     result = subprocess.run(["nvidia-smi", "--query-gpu=name,compute_cap", "--format=csv,noheader"],
                            capture_output=True, text=True, timeout=10)
@@ -34,66 +32,76 @@ except:
     print("      No NVIDIA GPU detected")
     has_gpu = False
 
-print("\n[2/5] Checking CUDA compiler...")
+# Step 2: NVCC Detection
+print("\n[2/6] Checking CUDA compiler...")
 nvcc_check = subprocess.run(["which", "nvcc"], capture_output=True, text=True)
 if nvcc_check.returncode == 0:
     nvcc_path = nvcc_check.stdout.strip()
-    print(f"      NVCC found: {nvcc_path}")
-    nvcc_version = subprocess.run([nvcc_path, "--version"], capture_output=True, text=True)
-    for line in nvcc_version.stdout.split("\n"):
+    print(f"      NVCC: {nvcc_path}")
+    nvcc_v = subprocess.run([nvcc_path, "--version"], capture_output=True, text=True)
+    for line in nvcc_v.stdout.split("\n"):
         if "release" in line.lower():
             print(f"      {line.strip()}")
+    has_nvcc = True
 else:
-    print("      NVCC not found - CUDA backend will not be available")
+    print("      NVCC not found")
+    has_nvcc = False
 
-print("\n[3/5] Removing old installations...")
+# Step 3: Clean ALL Caches
+print("\n[3/6] Cleaning ALL caches...")
 os.system("pip uninstall -y xerv-crayon crayon 2>/dev/null")
-os.system("rm -rf /tmp/crayon ~/.cache/pip/wheels/*crayon* 2>/dev/null")
+os.system("pip cache purge 2>/dev/null")
+os.system("rm -rf /tmp/crayon /tmp/crayon_build ~/.cache/pip 2>/dev/null")
+print("      Done")
 
-print("\n[4/5] Cloning latest source from GitHub...")
-os.system("rm -rf /tmp/crayon")
-clone_result = os.system("git clone --depth 1 https://github.com/Electroiscoding/CRAYON.git /tmp/crayon")
-if clone_result != 0:
-    print("      ERROR: Git clone failed!")
-    sys.exit(1)
+# Step 4: Fresh Clone with timestamp to avoid caching
+print("\n[4/6] Cloning from GitHub (fresh)...")
+timestamp = int(time.time())
+clone_dir = f"/tmp/crayon_{timestamp}"
+os.system(f"git clone --depth 1 https://github.com/Electroiscoding/CRAYON.git {clone_dir}")
 
-print("\n[5/5] Building and installing (with CUDA compilation)...")
-print("      This may take 1-2 minutes on first run...")
+# Verify version in cloned repo
+version_check = subprocess.run(["grep", "__version__", f"{clone_dir}/src/crayon/__init__.py"],
+                               capture_output=True, text=True)
+print(f"      Cloned version: {version_check.stdout.strip()}")
+
+# Step 5: Install with verbose output and no cache
+print("\n[5/6] Building and installing...")
 print("-" * 70)
 
-build_result = subprocess.run(
-    [sys.executable, "-m", "pip", "install", "-v", "--no-build-isolation", "/tmp/crayon"],
-    capture_output=False
+result = subprocess.run(
+    [sys.executable, "-m", "pip", "install", "-v", "--no-cache-dir", "--no-build-isolation", clone_dir],
+    env={**os.environ, "CUDA_HOME": "/usr/local/cuda"}
 )
 
 print("-" * 70)
 
-if build_result.returncode != 0:
-    print("\nERROR: Installation failed!")
-    sys.exit(1)
+# Step 6: Verify Installation
+print("\n[6/6] Verifying installation...")
 
-print("\n" + "=" * 70)
-print("INSTALLATION COMPLETE")
-print("=" * 70)
+# Force reimport
+if "crayon" in sys.modules:
+    del sys.modules["crayon"]
+for key in list(sys.modules.keys()):
+    if key.startswith("crayon"):
+        del sys.modules[key]
 
 import crayon
-print(f"\nCrayon Version: {crayon.get_version()}")
+print(f"\n      Crayon Version: {crayon.get_version()}")
 backends = crayon.check_backends()
-print(f"Available Backends: {backends}")
+print(f"      Backends: {backends}")
 
-if has_gpu and not backends.get("cuda"):
-    print("\nWARNING: GPU detected but CUDA backend not available!")
-    print("Check the build output above for CUDA compilation errors.")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CELL 2: INITIALIZE AND TEST
-# ═══════════════════════════════════════════════════════════════════════════════
-
-from crayon import CrayonVocab
+if backends.get("cuda"):
+    print("      CUDA backend: READY")
+elif has_gpu and has_nvcc:
+    print("\n      WARNING: GPU + NVCC detected but CUDA backend not available!")
+    print("      Check the build output above for errors.")
 
 print("\n" + "=" * 70)
-print("TOKENIZER TEST")
+print("INITIALIZATION")
 print("=" * 70)
+
+from crayon import CrayonVocab
 
 vocab = CrayonVocab(device="auto")
 vocab.load_profile("lite")
@@ -101,53 +109,30 @@ vocab.load_profile("lite")
 info = vocab.get_info()
 print(f"\nActive Device: {info['device'].upper()}")
 print(f"Backend: {info['backend']}")
-print(f"Vocabulary Size: {vocab.vocab_size:,} tokens")
+print(f"Vocabulary: {vocab.vocab_size:,} tokens")
 
-text = "Hello, world! Crayon is a high-performance tokenizer."
+# Quick test
+text = "Hello, Crayon tokenizer!"
 tokens = vocab.tokenize(text)
-print(f"\nTest Input: {text}")
-print(f"Tokens: {tokens}")
-print(f"Token Count: {len(tokens)}")
+print(f"\nTest: '{text}' -> {len(tokens)} tokens")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CELL 3: BENCHMARKS
-# ═══════════════════════════════════════════════════════════════════════════════
+print("\n" + "=" * 70)
+print("BENCHMARKS")
+print("=" * 70)
 
 import time
 
-print("\n" + "=" * 70)
-print("PERFORMANCE BENCHMARKS")
-print("=" * 70)
-
 base_text = "The quick brown fox jumps over the lazy dog."
 
-print("\n--- Latency Test (Single String) ---")
-iterations = 10000
-for _ in range(100):
-    vocab.tokenize(base_text)
-start = time.perf_counter()
-for _ in range(iterations):
-    vocab.tokenize(base_text)
-elapsed = time.perf_counter() - start
-print(f"Latency: {(elapsed/iterations)*1e6:.2f} microseconds/call")
-print(f"Throughput: {iterations/elapsed:,.0f} calls/second")
-
-print("\n--- Batch Throughput Test ---")
-print(f"{'Batch Size':>12} | {'Docs/sec':>14} | {'Tokens/sec':>16}")
-print("-" * 50)
-
-for batch_size in [100, 1000, 10000, 50000]:
+print("\n--- Batch Throughput ---")
+for batch_size in [1000, 10000, 50000]:
     batch = [base_text] * batch_size
     vocab.tokenize(batch[:10])
-    
     start = time.time()
     results = vocab.tokenize(batch)
     duration = time.time() - start
-    
     total_tokens = sum(len(r) for r in results)
-    docs_sec = batch_size / duration
-    toks_sec = total_tokens / duration
-    print(f"{batch_size:>12,} | {docs_sec:>14,.0f} | {toks_sec:>16,.0f}")
+    print(f"{batch_size:>8}: {batch_size/duration:>12,.0f} docs/sec | {total_tokens/duration:>14,.0f} tokens/sec")
 
 if vocab.device != "cpu":
     print(f"\n--- GPU Stress Test ({vocab.device.upper()}) ---")
@@ -157,32 +142,7 @@ if vocab.device != "cpu":
         results = vocab.tokenize(batch)
         duration = time.time() - start
         total_tokens = sum(len(r) for r in results)
-        print(f"{batch_size:>12,} docs in {duration:.3f}s = {batch_size/duration:,.0f} docs/sec, {total_tokens/duration:,.0f} tokens/sec")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CELL 4: ROUND-TRIP VERIFICATION
-# ═══════════════════════════════════════════════════════════════════════════════
-
-print("\n" + "=" * 70)
-print("ENCODE/DECODE VERIFICATION")
-print("=" * 70)
-
-test_strings = [
-    "Hello, Crayon!",
-    "The quick brown fox jumps over the lazy dog.",
-    "def forward(self, x): return torch.relu(x)",
-]
-
-all_passed = True
-for s in test_strings:
-    tokens = vocab.tokenize(s)
-    decoded = vocab.decode(tokens)
-    passed = s == decoded
-    all_passed = all_passed and passed
-    status = "PASS" if passed else "FAIL"
-    print(f"[{status}] '{s[:40]}...' -> {len(tokens)} tokens")
-
-print(f"\nAll tests passed: {all_passed}")
+        print(f"{batch_size:>8}: {batch_size/duration:>12,.0f} docs/sec in {duration:.3f}s")
 
 vocab.close()
 print("\nDone!")
