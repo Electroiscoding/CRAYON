@@ -1,32 +1,10 @@
-# License and documentation
-include LICENSE
-include README.md
-include CHANGELOG.md
 include pyproject.toml
-
-# C/C++ source files for compilation
+include setup.py
+include README.md
+include LICENSE
+recursive-include src/crayon *.py
+recursive-include src/crayon *.pyi
+recursive-include src/crayon/resources *
 recursive-include src/crayon/c_ext *.h *.c *.cpp *.cu
-
-# Pre-compiled DAT vocabulary files (essential for performance)
-recursive-include src/crayon/resources/dat *.dat *.json
-
-# Resource files for vocabulary building
-recursive-include src/crayon/resources *.txt *.csv
-
-# Exclude compiled binaries (will be built on target system)
-global-exclude *.pyd
-global-exclude *.so
-global-exclude *.dylib
-global-exclude __pycache__
 global-exclude *.pyc
-global-exclude *.pyo
-
-# Exclude development files
-global-exclude .git*
-global-exclude .pytest_cache
-global-exclude *.egg-info
-prune build
-prune dist
-prune venv
-prune .venv
-prune tests
+global-exclude __pycache__

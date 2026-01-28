@@ -1,12 +1,10 @@
 """
-XERV CRAYON V4.2.4 - Production Omni-Backend Tokenizer
+XERV CRAYON V4.2.5 - Production Omni-Backend Tokenizer
 =======================================================
 Copy this ENTIRE script into a Google Colab cell and run it.
 
 IMPORTANT: Enable GPU runtime first:
 Runtime -> Change runtime type -> GPU (T4/V100/A100)
-
-This version uses PyTorch's CUDAExtension for reliable CUDA compilation.
 """
 
 import subprocess
@@ -15,169 +13,125 @@ import os
 import time
 
 print("=" * 70)
-print("XERV CRAYON V4.2.4 INSTALLATION")
+print("XERV CRAYON V4.2.5 INSTALLATION")
 print("=" * 70)
 
-print("\n[1/7] Detecting GPU hardware...")
+# 1. Environment Check
+print("[1/7] Checking environment...")
 try:
-    result = subprocess.run(["nvidia-smi", "--query-gpu=name,compute_cap", "--format=csv,noheader"],
-                           capture_output=True, text=True, timeout=10)
-    if result.returncode == 0:
-        gpu_info = result.stdout.strip()
-        print(f"      GPU: {gpu_info}")
-        has_gpu = True
+    import torch
+    print(f"      PyTorch: {torch.__version__}")
+    if torch.cuda.is_available():
+        print(f"      CUDA: {torch.version.cuda} ({torch.cuda.get_device_name(0)})")
     else:
-        print("      No NVIDIA GPU detected")
-        has_gpu = False
-except:
-    print("      No NVIDIA GPU detected")
-    has_gpu = False
+        print("      CUDA: Not available (CPU only)")
+except ImportError:
+    print("      PyTorch not found (will be installed)")
 
-print("\n[2/7] Checking CUDA compiler...")
 nvcc_check = subprocess.run(["which", "nvcc"], capture_output=True, text=True)
 if nvcc_check.returncode == 0:
     print(f"      NVCC: {nvcc_check.stdout.strip()}")
 else:
-    print("      NVCC not found")
+    print("      NVCC: Not found")
 
-print("\n[3/7] Ensuring PyTorch with CUDA...")
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch"], capture_output=True)
 
-import torch
-print(f"      PyTorch: {torch.__version__}")
-print(f"      CUDA available: {torch.cuda.is_available()}")
-if torch.cuda.is_available():
-    print(f"      CUDA version: {torch.version.cuda}")
+# 2. Build Dependencies
+print("\n[2/7] Installing build dependencies...")
+subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "ninja", "packaging", "wheel", "setuptools>=68.0"])
+print("      Done (ninja, packaging, wheel)")
 
-print("\n[4/7] Cleaning caches...")
+
+# 3. Clean Old State
+print("\n[3/7] Cleaning previous installations...")
 os.system("pip uninstall -y xerv-crayon crayon 2>/dev/null")
-os.system("pip cache purge 2>/dev/null")
-os.system("rm -rf /tmp/crayon* ~/.cache/pip 2>/dev/null")
-print("      Done")
+os.system("rm -rf /tmp/crayon* build dist src/*.egg-info 2>/dev/null")
 
-print("\n[5/7] Cloning from GitHub...")
+
+# 4. Clone Source
+print("\n[4/7] Cloning source code...")
 timestamp = int(time.time())
 clone_dir = f"/tmp/crayon_{timestamp}"
-os.system(f"git clone --depth 1 https://github.com/Electroiscoding/CRAYON.git {clone_dir}")
+cmd = f"git clone --depth 1 https://github.com/Electroiscoding/CRAYON.git {clone_dir}"
+if os.system(cmd) != 0:
+    print("      FATAL: Git clone failed!")
+    sys.exit(1)
 
-version_check = subprocess.run(["grep", "-m1", "__version__", f"{clone_dir}/src/crayon/__init__.py"],
-                               capture_output=True, text=True)
-print(f"      Source version: {version_check.stdout.strip()}")
+# Verify source
+v_check = subprocess.run(["grep", "-m1", "__version__", f"{clone_dir}/src/crayon/__init__.py"], 
+                        capture_output=True, text=True)
+print(f"      {v_check.stdout.strip()}")
 
-print("\n[6/7] Building with PyTorch CUDAExtension...")
+
+# 5. Build & Install
+print("\n[5/7] Compiling and Installing (this may take 2-3 minutes)...")
 print("-" * 70)
 
 build_env = os.environ.copy()
+build_env["MAX_JOBS"] = "4"  # Prevent OOM
 build_env["CUDA_HOME"] = "/usr/local/cuda"
 
-result = subprocess.run(
-    [sys.executable, "-m", "pip", "install", "-v", "--no-cache-dir", "--no-build-isolation", clone_dir],
-    env=build_env
-)
+# We use check_call so it throws error on failure
+try:
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "-v", "--no-build-isolation", clone_dir],
+        env=build_env
+    )
+except subprocess.CalledProcessError:
+    print("\n" + "!" * 70)
+    print("FATAL ERROR: Installation failed!")
+    print("Please check the error log above.")
+    print("!" * 70)
+    sys.exit(1)
 
 print("-" * 70)
 
-print("\n[7/7] Verifying installation...")
 
+# 6. Verification
+print("\n[6/7] Verifying installation...")
+# Reset module cache
 for key in list(sys.modules.keys()):
     if "crayon" in key:
         del sys.modules[key]
 
-import crayon
-print(f"\n      Installed version: {crayon.get_version()}")
-backends = crayon.check_backends()
-print(f"      Backends: {backends}")
+try:
+    import crayon
+    print(f"      Succcess! Installed version: {crayon.get_version()}")
+    backends = crayon.check_backends()
+    print(f"      Backends: {backends}")
+except ImportError as e:
+    print(f"      FATAL: Could not import crayon: {e}")
+    sys.exit(1)
 
-if backends.get("cuda"):
-    print("      CUDA backend: READY", "")
-else:
-    if has_gpu:
-        print("      CUDA backend: NOT AVAILABLE (check build logs above)")
-    else:
-        print("      CUDA backend: NOT AVAILABLE (no GPU)")
 
+# 7. Benchmarks
 print("\n" + "=" * 70)
-print("TOKENIZER INITIALIZATION")
+print("BENCHMARKS & TESTING")
 print("=" * 70)
 
 from crayon import CrayonVocab
 
 vocab = CrayonVocab(device="auto")
 vocab.load_profile("lite")
+print(f"\nActive Device: {vocab.device.upper()}")
+print(f"Backend: {vocab.backend_name}")
 
-info = vocab.get_info()
-print(f"\nActive Device: {info['device'].upper()}")
-print(f"Backend: {info['backend']}")
-print(f"Vocabulary: {vocab.vocab_size:,} tokens")
+if vocab.device == "cpu" and backends.get("cuda"):
+    print("NOTE: Running on CPU but CUDA is available. Use device='cuda' to force.")
 
-text = "Hello, Crayon tokenizer!"
-tokens = vocab.tokenize(text)
-print(f"\nQuick Test: '{text}'")
-print(f"Tokens: {tokens}")
-print(f"Count: {len(tokens)}")
-
-print("\n" + "=" * 70)
-print("PERFORMANCE BENCHMARKS")
-print("=" * 70)
-
-base_text = "The quick brown fox jumps over the lazy dog."
-
-print("\n--- Latency (single string) ---")
-iterations = 10000
-for _ in range(100):
-    vocab.tokenize(base_text)
-start = time.perf_counter()
-for _ in range(iterations):
-    vocab.tokenize(base_text)
-elapsed = time.perf_counter() - start
-print(f"Latency: {(elapsed/iterations)*1e6:.2f} us/call")
-print(f"Calls/sec: {iterations/elapsed:,.0f}")
-
-print("\n--- Batch Throughput ---")
-print(f"{'Batch':>10} | {'Docs/sec':>14} | {'Tokens/sec':>16}")
-print("-" * 48)
-
-for batch_size in [1000, 10000, 50000]:
-    batch = [base_text] * batch_size
-    vocab.tokenize(batch[:10])
+# Throughput test
+text = "The quick brown fox jumps over the lazy dog."
+batch_sizes = [1000, 10000, 50000]
+print("\nBatch Throughput:")
+for bs in batch_sizes:
+    batch = [text] * bs
+    # Warmup
+    vocab.tokenize(batch[:10]) 
+    
     start = time.time()
-    results = vocab.tokenize(batch)
-    duration = time.time() - start
-    total_tokens = sum(len(r) for r in results)
-    print(f"{batch_size:>10,} | {batch_size/duration:>14,.0f} | {total_tokens/duration:>16,.0f}")
+    res = vocab.tokenize(batch)
+    dur = time.time() - start
+    
+    toks = sum(len(x) for x in res)
+    print(f"  {bs:>8,} docs: {bs/dur:>12,.0f} docs/sec | {toks/dur:>14,.0f} tokens/sec")
 
-if vocab.device != "cpu":
-    print(f"\n--- GPU Stress Test ({vocab.device.upper()}) ---")
-    for batch_size in [100000, 500000]:
-        batch = [base_text] * batch_size
-        torch.cuda.synchronize() if torch.cuda.is_available() else None
-        start = time.time()
-        results = vocab.tokenize(batch)
-        torch.cuda.synchronize() if torch.cuda.is_available() else None
-        duration = time.time() - start
-        total_tokens = sum(len(r) for r in results)
-        print(f"{batch_size:>10,}: {batch_size/duration:>12,.0f} docs/sec | {duration:.3f}s")
-
-print("\n" + "=" * 70)
-print("ENCODE/DECODE VERIFICATION")
-print("=" * 70)
-
-test_cases = [
-    "Hello, world!",
-    "The quick brown fox.",
-    "def forward(self, x): return x",
-]
-
-all_passed = True
-for text in test_cases:
-    tokens = vocab.tokenize(text)
-    decoded = vocab.decode(tokens)
-    passed = text == decoded
-    all_passed = all_passed and passed
-    status = "PASS" if passed else "FAIL"
-    print(f"[{status}] '{text}' -> {len(tokens)} tokens")
-
-print(f"\nAll tests: {'PASSED' if all_passed else 'FAILED'}")
-
-vocab.close()
 print("\nDone!")
