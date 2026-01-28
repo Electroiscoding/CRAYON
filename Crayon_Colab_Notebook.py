@@ -26,7 +26,7 @@ print(f"GPU Detected: {has_gpu}")
 if has_gpu:
     print("Building from source with CUDA support...")
     os.system("rm -rf /tmp/crayon 2>/dev/null")
-    result = os.system("git clone --depth 1 https://github.com/xerv/crayon.git /tmp/crayon 2>/dev/null")
+    result = os.system("git clone --depth 1 https://github.com/Electroiscoding/CRAYON.git /tmp/crayon 2>/dev/null")
     if result == 0:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-build-isolation", "/tmp/crayon"])
     else:
