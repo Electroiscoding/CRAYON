@@ -1,5 +1,5 @@
 """
-XERV CRAYON V4.2.5 - Production Omni-Backend Tokenizer
+XERV CRAYON V4.2.6 - Production Omni-Backend Tokenizer
 =======================================================
 Copy this ENTIRE script into a Google Colab cell and run it.
 
@@ -13,7 +13,7 @@ import os
 import time
 
 print("=" * 70)
-print("XERV CRAYON V4.2.5 INSTALLATION")
+print("XERV CRAYON V4.2.6 INSTALLATION")
 print("=" * 70)
 
 # 1. Environment Check
@@ -23,6 +23,7 @@ try:
     print(f"      PyTorch: {torch.__version__}")
     if torch.cuda.is_available():
         print(f"      CUDA: {torch.version.cuda} ({torch.cuda.get_device_name(0)})")
+        print("      * Smart Build: Will compile ONLY for this GPU architecture")
     else:
         print("      CUDA: Not available (CPU only)")
 except ImportError:
@@ -62,28 +63,35 @@ v_check = subprocess.run(["grep", "-m1", "__version__", f"{clone_dir}/src/crayon
 print(f"      {v_check.stdout.strip()}")
 
 
-# 5. Build & Install
-print("\n[5/7] Compiling and Installing (this may take 2-3 minutes)...")
+# 5. Build & Install (Streaming Output)
+print("\n[5/7] Compiling and Installing (Streaming Logs)...")
 print("-" * 70)
 
 build_env = os.environ.copy()
-build_env["MAX_JOBS"] = "4"  # Prevent OOM
-build_env["CUDA_HOME"] = "/usr/local/cuda"
+build_env["MAX_JOBS"] = "1"      # Force serial build to prevent OOM
+build_env["cuda_home"] = "/usr/local/cuda"
 
-# We use check_call so it throws error on failure
-try:
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "-v", "--no-build-isolation", clone_dir],
-        env=build_env
-    )
-except subprocess.CalledProcessError:
+# Stream output line-by-line
+cmd = [sys.executable, "-m", "pip", "install", "-v", "--no-build-isolation", clone_dir]
+process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=build_env, text=True)
+
+# Print output while running
+while True:
+    line = process.stdout.readline()
+    if not line and process.poll() is not None:
+        break
+    if line:
+        print(line.rstrip())
+
+rc = process.poll()
+print("-" * 70)
+
+if rc != 0:
     print("\n" + "!" * 70)
     print("FATAL ERROR: Installation failed!")
-    print("Please check the error log above.")
+    print(f"Exit Code: {rc}")
     print("!" * 70)
     sys.exit(1)
-
-print("-" * 70)
 
 
 # 6. Verification
@@ -95,7 +103,7 @@ for key in list(sys.modules.keys()):
 
 try:
     import crayon
-    print(f"      Succcess! Installed version: {crayon.get_version()}")
+    print(f"      Success! Installed version: {crayon.get_version()}")
     backends = crayon.check_backends()
     print(f"      Backends: {backends}")
 except ImportError as e:
