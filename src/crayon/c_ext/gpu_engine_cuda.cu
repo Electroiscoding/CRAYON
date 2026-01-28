@@ -295,7 +295,7 @@ static PyObject* tokenize_batch_gpu(PyObject* self, PyObject* args) {
 }
 
 // FIX: Module destructor for cleanup
-static void module_cleanup(PyObject* module) {
+static void module_cleanup(void* module) {
     if (stream) cudaStreamDestroy(stream);
     if (d_cuda_base) cudaFree(d_cuda_base);
     if (d_cuda_check) cudaFree(d_cuda_check);
