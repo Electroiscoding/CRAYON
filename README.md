@@ -2,7 +2,7 @@
   <img src="https://em-content.zobj.net/source/microsoft-teams/363/crayon_1f58d-fe0f.png" width="120" alt="Crayon Logo"/>
 </p>
 
-<h1 align="center">🖍️ XERV Crayon v4.0</h1>
+<h1 align="center">🖍️ XERV Crayon v4.1.9</h1>
 
 <p align="center">
   <strong>The Omni-Backend Tokenizer for Specialized AI</strong>
@@ -30,40 +30,98 @@
 |:--------|:------------|
 | **💾 Cartridge System** | Instantly hot-swap specialized vocabularies (`science`, `code`, `multilingual`) |
 | **🚀 Omni-Backend** | Auto-detects & runs on **CPU (AVX2)**, **NVIDIA (CUDA)**, or **AMD (ROCm)** |
-| **⚡ Native GPU Kernels** | "Bare Metal" C++/HIP kernels (no wrappers) for >100M tokens/sec |
+| **⚡ Native GPU Kernels** | "Bare Metal" C++/CUDA/HIP kernels (no wrappers) for >10M tokens/sec |
 | **🗺️ Zero-Copy Mapping** | DAT files loaded via `mmap` for instant startup & minimal RAM |
 | **🌊 Zero-Disk Streaming** | Build profiles directly from Hugging Face—no multi-GB downloads |
 | **🛡️ Offline Resilience** | Seamless local bootstrap fallback. Works offline out-of-the-box |
 
 ---
 
-## 📊 Benchmarks — The Numbers Speak
+## 📊 Benchmarks — Production Results (Tesla T4 GPU)
 
-> **100% HONEST. NO SUGARCOATING. DATA-DRIVEN.**
+> **100% VERIFIED. GOOGLE COLAB T4 GPU.**
 > 
-> Run `python benchmark_competitive.py` to reproduce these results yourself.
+> Complete installation and benchmark logs from actual T4 GPU testing.
 
-### ⚡ Speed Comparison (Omni-Backend)
+### ⚡ Installation Summary (T4 GPU Environment)
 
-| Tokenizer | Tokens/sec | vs CRAYON |
-|:----------|----------:|:----------|
-| **🖍️ CRAYON (CPU - AVX2)** | **21,863,777** | **baseline** |
-| **🖍️ CRAYON (CUDA - A100)** | **140,000,000+** | **6.4x faster** |
-| tiktoken (GPT-4) | 524,469 | 41x slower |
-| HF LLaMA (SP-BPE) | 281,558 | 77x slower |
-| HF GPT-2 (BPE) | 237,117 | 92x slower |
-| HF BERT (WordPiece) | 202,269 | 108x slower |
+```
+======================================================================
+XERV CRAYON V4.1.9 INSTALLATION AND BENCHMARKS
+======================================================================
+[1/7] Checking environment...
+      PyTorch: 2.9.0+cu126
+      CUDA: 12.6 (Tesla T4)
+      * Smart Build: Will compile ONLY for this GPU architecture
+      NVCC: /usr/local/cuda/bin/nvcc
 
-### 📈 CPU Optimization Verification
-*Measured on Intel Core i3-7020U (Low-Power Laptop CPU)*
+[2/7] Installing build dependencies...
+      Done (ninja, packaging, wheel)
 
-| Metric | Result |
-|:-------|:-------|
-| ✅ **AVX2 Status** | Active (Simd-Ops v4) |
-| ✅ **Load Time** | **0.54ms** (Instant hot-swap) |
-| ✅ **Throughput** | **21.1M tokens/sec** (!?!) |
+[3/7] Cleaning previous installations...
 
-![Benchmark Comparison](benchmark_comparison.png)
+[4/7] Cloning source code...
+      __version__ = "4.1.9"
+
+[5/7] Compiling and Installing (Streaming Logs)...
+----------------------------------------------------------------------
+[CRAYON-BUILD] Detected GPU: SM 7.5 -> Compiling for sm_75 ONLY
+[CRAYON-BUILD] Configuring CUDA extension (max_jobs=1)
+
+building 'crayon.c_ext.crayon_cpu' extension
+[1/1] c++ -O3 -march=native -mavx2 -fPIC -std=c++17
+Successfully built crayon_cpu.so
+
+building 'crayon.c_ext.crayon_cuda' extension
+[1/1] nvcc -O3 -std=c++17 --expt-relaxed-constexpr -gencode=arch=compute_75,code=sm_75
+Successfully built crayon_cuda.so
+
+Successfully installed xerv-crayon-4.1.9
+----------------------------------------------------------------------
+
+[6/7] Verifying installation...
+      Success! Installed version: 4.1.9
+      Backends: {'cpu': True, 'cuda': True, 'rocm': False}
+```
+
+### 🔥 Performance Results (T4 GPU vs Tiktoken)
+
+**CRAYON (CUDA Backend - Tesla T4):**
+```
+Active Device: CUDA
+Backend: cuda_extension
+
+Batch Throughput (XERV CRAYON):
+     1,000 docs:      748,048 docs/sec |      9,724,621 tokens/sec
+    10,000 docs:      639,239 docs/sec |      8,310,109 tokens/sec
+    50,000 docs:      781,129 docs/sec |     10,154,678 tokens/sec
+```
+
+**Tiktoken (cl100k_base - CPU):**
+```
+Tiktoken Batch Throughput (cl100k_base encoding):
+     1,000 docs:       87,307 docs/sec |        873,068 tokens/sec
+    10,000 docs:       81,658 docs/sec |        816,576 tokens/sec
+    50,000 docs:      107,583 docs/sec |      1,075,829 tokens/sec
+```
+
+### 📈 Performance Comparison Table
+
+| Batch Size | CRAYON Docs/Sec | CRAYON Tokens/Sec | Tiktoken Docs/Sec | Tiktoken Tokens/Sec | **Speedup** |
+|:-----------|----------------:|------------------:|------------------:|--------------------:|------------:|
+| 1,000      | 748,048         | 9,724,621         | 87,307            | 873,068             | **11.1x** ✨ |
+| 10,000     | 639,239         | 8,310,109         | 81,658            | 816,576             | **10.2x** ✨ |
+| 50,000     | 781,129         | 10,154,678        | 107,583           | 1,075,829           | **9.4x** ✨ |
+
+**Average Speedup: 10.2x faster than tiktoken on Tesla T4 GPU**
+
+### 🎯 Key Achievements
+
+- ✅ **>10M tokens/sec** on mid-tier GPU (Tesla T4)
+- ✅ **Smart compilation** - Only builds for detected GPU architecture
+- ✅ **Zero-copy memory mapping** - Instant profile loading (<1ms)
+- ✅ **Production-grade stability** - Handles 50K+ document batches
+- ✅ **Consistent performance** - Minimal variance across batch sizes
 
 ---
 
