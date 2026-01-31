@@ -266,9 +266,11 @@ static PyObject* load_gpu(PyObject* self, PyObject* args) {
     trie_size = sz;
     engine_loaded = true;
     
-    // Return success info
-    return PyUnicode_FromFormat("Loaded %u entries (%.2f MB) to GPU", 
-                                 sz, (array_bytes * 3) / (1024.0 * 1024.0));
+    // Return success info (use snprintf because PyUnicode_FromFormat doesn't support %f)
+    char msg[256];
+    snprintf(msg, sizeof(msg), "Loaded %u entries (%.2f MB) to GPU", 
+             sz, (array_bytes * 3) / (1024.0 * 1024.0));
+    return PyUnicode_FromString(msg);
 }
 
 // --- BATCH TOKENIZATION ---
