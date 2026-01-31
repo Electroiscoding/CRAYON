@@ -1,42 +1,40 @@
 /*
- * XERV CRAYON NVCUDA ENGINE (NVIDIA BACKEND) - OPTIMIZED v2.0
- * Architecture: PTX Optimized CUDA Kernel with Async Streams
- * Target Hardware: NVIDIA Tesla/Ampere/Hopper
- * Enhancements: Dynamic sizing, full error handling, UTF-8 safe, 2x perf boost
+ * XERV CRAYON CUDA ENGINE v3.0 - PRODUCTION GRADE
+ * Architecture: Synchronous CUDA with explicit device initialization
+ * Target Hardware: NVIDIA Tesla T4/V100/A100/H100
+ * Stability: Maximum compatibility - no async allocators, explicit init
  */
 
 #include <cuda_runtime.h>
 #include <Python.h>
 #include <vector>
-#include <iostream>
-#include <string>
-#include <chrono>  // FIX: For timing telemetry
+#include <cstring>
+#include <cstdint>
 
-// --- DEVICE GLOBALS ---
-static int32_t *d_cuda_base = nullptr;
-static int32_t *d_cuda_check = nullptr;
-static int32_t *d_cuda_values = nullptr;
-static uint32_t cuda_trie_size = 0;
-static bool cuda_loaded = false;
-static cudaStream_t stream = nullptr;
+// --- DEVICE STATE ---
+static int32_t *d_base = nullptr;
+static int32_t *d_check = nullptr;
+static int32_t *d_values = nullptr;
+static uint32_t trie_size = 0;
+static bool engine_loaded = false;
+static bool cuda_initialized = false;
 
-#define CHECK_CUDA_ERR(call) do { \
+// Forward declarations
+static void cleanup_cuda_memory(void);
+
+// --- SAFE CUDA CALL MACRO ---
+#define CUDA_SAFE_CALL(call) do { \
     cudaError_t err = (call); \
     if (err != cudaSuccess) { \
-        PyErr_Format(PyExc_RuntimeError, "CUDA Error: %s at %s:%d", cudaGetErrorString(err), __FILE__, __LINE__); \
+        const char* errStr = cudaGetErrorString(err); \
+        PyErr_Format(PyExc_RuntimeError, "CUDA Error: %s at %s:%d", errStr, __FILE__, __LINE__); \
         return NULL; \
     } \
 } while(0)
 
-struct CudaMemGuard {
-    void** ptrs;
-    int num;
-    CudaMemGuard(void** p, int n) : ptrs(p), num(n) {}
-    ~CudaMemGuard() { for(int i=0; i<num; i++) if(ptrs[i]) cudaFree(ptrs[i]); }
-};
-
-// --- KERNEL ---
-__global__ void tokenize_kernel_cuda(
+// --- SIMPLE TOKENIZATION KERNEL ---
+// Uses per-thread local memory instead of shared memory for maximum stability
+__global__ void tokenize_kernel(
     const int32_t* __restrict__ base,
     const int32_t* __restrict__ check,
     const int32_t* __restrict__ values,
@@ -45,279 +43,409 @@ __global__ void tokenize_kernel_cuda(
     int* out_tokens,
     int* out_counts,
     int n_sentences,
-    int max_capacity,
-    uint32_t trie_size
+    int max_tokens,
+    uint32_t trie_sz
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_sentences) return;
-    
-    // FIX: Static shared memory is safer/stable
-    __shared__ char sh_text[1024];
-    
-    int start = offsets[idx];
-    int end = offsets[idx+1];
-    int chunk_size = min(end - start, 1024);
-    for(int i=0; i<chunk_size; i+=blockDim.x) {
-        int tid = threadIdx.x + i;
-        if (tid < chunk_size) sh_text[tid] = text_pool[start + tid];
-    }
-    __syncthreads();
 
+    int start = offsets[idx];
+    int end = offsets[idx + 1];
+    int len = end - start;
+    
     int node = 0;
     int count = 0;
-    int write_ptr = idx * max_capacity;
+    int write_pos = idx * max_tokens;
     int pos = 0;
 
-    while (pos < chunk_size && count < max_capacity) {
-        int best_token = 1;
+    while (pos < len && count < max_tokens) {
+        int best_token = 1;  // UNK token
         int best_len = 0;
-        int curr = node;
+        int curr = 0;
         
-#pragma unroll 4
-        for (int i = pos; i < chunk_size; ++i) {
-            uint8_t c = (uint8_t)sh_text[i];
+        for (int i = pos; i < len && i < pos + 128; ++i) {  // Max 128 chars lookahead
+            unsigned char c = (unsigned char)text_pool[start + i];
             int next = base[curr] + c;
-            if (next >= 0 && (uint32_t)next < trie_size) {
-                if (check[next] != curr) break;
+            
+            if (next >= 0 && (uint32_t)next < trie_sz && check[next] == curr) {
                 curr = next;
                 int val = values[curr];
                 if (val != -1) {
                     best_token = val;
                     best_len = (i - pos) + 1;
                 }
-                node = (best_len > 0) ? 0 : curr;
             } else {
                 break;
             }
         }
         
-        if (best_len > 0) {
-            pos += best_len;
-        } else {
-            pos++;
-            best_token = 1;  // Unk token
-        } 
-        
-        // FIX: Atomic write + assert no overflow
-        if (count < max_capacity) {
-            out_tokens[write_ptr + count] = best_token;
-            count++;
-        } else {
-            atomicExch(&out_counts[idx], max_capacity);  // Cap count
-            return;  // FIX: Early exit
-        }
+        out_tokens[write_pos + count] = best_token;
+        count++;
+        pos += (best_len > 0) ? best_len : 1;
     }
+    
     out_counts[idx] = count;
 }
 
-// --- HOST FUNCTIONS ---
-
-static PyObject* get_hardware_info(PyObject* self, PyObject* args) {
-    int deviceId;
-    CHECK_CUDA_ERR(cudaGetDevice(&deviceId));  // FIX: Safe call
-
-    cudaDeviceProp prop;
-    CHECK_CUDA_ERR(cudaGetDeviceProperties(&prop, deviceId));
-
-    size_t free_vram, total_vram;
-    CHECK_CUDA_ERR(cudaMemGetInfo(&free_vram, &total_vram));
-
-    // FIX: Hyper-detailed: Add VRAM, clock, async support
-    std::string info = std::string(prop.name) + " [SM " + 
-                       std::to_string(prop.major) + "." + std::to_string(prop.minor) + 
-                       ", " + std::to_string(total_vram / (1024*1024)) + " MB Total, " +
-                       std::to_string(free_vram / (1024*1024)) + " MB Free, " +
-                       "Async: " + (prop.asyncEngineCount > 0 ? "Yes" : "No") + "]";
-
-    // FIX: Return dict for extensibility
-    PyObject* dict = PyDict_New();
-    PyDict_SetItemString(dict, "name", PyUnicode_FromString(prop.name));
-    PyDict_SetItemString(dict, "compute_capability", PyUnicode_FromFormat("%d.%d", prop.major, prop.minor));
-    PyDict_SetItemString(dict, "vram_mb", PyLong_FromLong(total_vram / (1024*1024)));
-    PyDict_SetItemString(dict, "free_vram_mb", PyLong_FromLong(free_vram / (1024*1024)));
-    PyDict_SetItemString(dict, "full_info", PyUnicode_FromString(info.c_str()));
-    return dict;
+// --- INITIALIZE CUDA DEVICE ---
+static PyObject* init_cuda_device(void) {
+    if (cuda_initialized) {
+        Py_RETURN_TRUE;
+    }
+    
+    int device_count = 0;
+    cudaError_t err = cudaGetDeviceCount(&device_count);
+    if (err != cudaSuccess || device_count == 0) {
+        PyErr_SetString(PyExc_RuntimeError, "No CUDA devices available");
+        return NULL;
+    }
+    
+    // Set device 0 and force context creation
+    err = cudaSetDevice(0);
+    if (err != cudaSuccess) {
+        PyErr_Format(PyExc_RuntimeError, "Failed to set CUDA device: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    // Force context initialization with a dummy allocation
+    void* dummy = nullptr;
+    err = cudaMalloc(&dummy, 1);
+    if (err != cudaSuccess) {
+        PyErr_Format(PyExc_RuntimeError, "Failed to initialize CUDA context: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    cudaFree(dummy);
+    
+    cuda_initialized = true;
+    Py_RETURN_TRUE;
 }
 
+// --- GET HARDWARE INFO ---
+static PyObject* get_hardware_info(PyObject* self, PyObject* args) {
+    int device_count = 0;
+    cudaError_t err = cudaGetDeviceCount(&device_count);
+    
+    if (err != cudaSuccess || device_count == 0) {
+        return PyUnicode_FromString("No CUDA devices found");
+    }
+    
+    cudaDeviceProp prop;
+    err = cudaGetDeviceProperties(&prop, 0);
+    if (err != cudaSuccess) {
+        return PyUnicode_FromString("Failed to get device properties");
+    }
+    
+    char info[512];
+    snprintf(info, sizeof(info), "%s [SM %d.%d, %.1f GB VRAM]",
+             prop.name, prop.major, prop.minor,
+             prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
+    
+    return PyUnicode_FromString(info);
+}
+
+// --- CLEANUP CUDA MEMORY ---
+static void cleanup_cuda_memory(void) {
+    if (d_base) { cudaFree(d_base); d_base = nullptr; }
+    if (d_check) { cudaFree(d_check); d_check = nullptr; }
+    if (d_values) { cudaFree(d_values); d_values = nullptr; }
+    engine_loaded = false;
+    trie_size = 0;
+}
+
+// --- LOAD DAT FILE TO GPU ---
 static PyObject* load_gpu(PyObject* self, PyObject* args) {
     PyObject* py_bytes;
     if (!PyArg_ParseTuple(args, "O", &py_bytes)) return NULL;
-    if (!PyBytes_Check(py_bytes)) {  // FIX: Type guard
+    
+    if (!PyBytes_Check(py_bytes)) {
         PyErr_SetString(PyExc_TypeError, "Expected bytes object");
         return NULL;
     }
     
-    char* raw = PyBytes_AsString(py_bytes);
-    uint32_t size;
-    memcpy(&size, raw + 8, sizeof(uint32_t));  // FIX: Safe memcpy
-    if (size == 0 || size > 1<<24) {  // FIX: Sanity check (max 16M entries)
-        PyErr_SetString(PyExc_ValueError, "Invalid trie size");
+    // Step 1: Initialize CUDA if not done
+    if (!cuda_initialized) {
+        PyObject* init_result = init_cuda_device();
+        if (init_result == NULL) {
+            return NULL;  // Error already set
+        }
+        Py_DECREF(init_result);
+    }
+    
+    // Step 2: Parse DAT file header
+    Py_ssize_t total_len = PyBytes_Size(py_bytes);
+    if (total_len < 12) {
+        PyErr_SetString(PyExc_ValueError, "DAT file too small (< 12 bytes)");
         return NULL;
     }
-    char* arr_ptr = raw + 12;
-    size_t bytes = size * sizeof(int32_t);
-
-    // FIX: Free old + guard (RAII handles actual free of old_ptrs upon exit)
-    void* old_ptrs[3] = {d_cuda_base, d_cuda_check, d_cuda_values};
-    CudaMemGuard guard(old_ptrs, 3);
     
-    // FIX: Remove manual free to prevent double-free with guard
+    const char* raw = PyBytes_AsString(py_bytes);
     
-    // FIX: Async alloc + stream init
-    if (!stream) CHECK_CUDA_ERR(cudaStreamCreate(&stream));
+    // Read trie size from offset 8 (standard DAT format)
+    uint32_t sz = 0;
+    memcpy(&sz, raw + 8, sizeof(uint32_t));
     
-    // Use standard cudaMalloc for maximum compatibility
-    CHECK_CUDA_ERR(cudaMalloc(&d_cuda_base, bytes));
-    CHECK_CUDA_ERR(cudaMalloc(&d_cuda_check, bytes));
-    CHECK_CUDA_ERR(cudaMalloc(&d_cuda_values, bytes));
-
-    CHECK_CUDA_ERR(cudaMemcpyAsync(d_cuda_base, arr_ptr, bytes, cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA_ERR(cudaMemcpyAsync(d_cuda_check, arr_ptr + bytes, bytes, cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA_ERR(cudaMemcpyAsync(d_cuda_values, arr_ptr + bytes*2, bytes, cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA_ERR(cudaStreamSynchronize(stream));  // FIX: Sync once
+    // Validate size
+    if (sz == 0) {
+        PyErr_SetString(PyExc_ValueError, "Trie size is 0");
+        return NULL;
+    }
+    if (sz > (1 << 24)) {  // Max 16M entries
+        PyErr_SetString(PyExc_ValueError, "Trie size exceeds maximum (16M entries)");
+        return NULL;
+    }
     
-    cuda_trie_size = size;
-    cuda_loaded = true;
-    // FIX: Telemetry return dict
-    PyObject* res_dict = PyDict_New();
-    PyDict_SetItemString(res_dict, "size", PyLong_FromLong(size));
-    PyDict_SetItemString(res_dict, "bytes_loaded", PyLong_FromLong(bytes * 3));
-    PyDict_SetItemString(res_dict, "status", PyUnicode_FromString("Loaded successfully"));
-    return res_dict;
+    size_t array_bytes = sz * sizeof(int32_t);
+    size_t required_bytes = 12 + (array_bytes * 3);
+    
+    if ((size_t)total_len < required_bytes) {
+        PyErr_Format(PyExc_ValueError, 
+                     "DAT file incomplete. Need %zu bytes, got %zd", 
+                     required_bytes, total_len);
+        return NULL;
+    }
+    
+    // Step 3: Cleanup any previous allocations
+    cleanup_cuda_memory();
+    
+    // Step 4: Allocate GPU memory (synchronous, most compatible)
+    cudaError_t err;
+    
+    err = cudaMalloc((void**)&d_base, array_bytes);
+    if (err != cudaSuccess) {
+        cleanup_cuda_memory();
+        PyErr_Format(PyExc_RuntimeError, "cudaMalloc d_base failed: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    err = cudaMalloc((void**)&d_check, array_bytes);
+    if (err != cudaSuccess) {
+        cleanup_cuda_memory();
+        PyErr_Format(PyExc_RuntimeError, "cudaMalloc d_check failed: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    err = cudaMalloc((void**)&d_values, array_bytes);
+    if (err != cudaSuccess) {
+        cleanup_cuda_memory();
+        PyErr_Format(PyExc_RuntimeError, "cudaMalloc d_values failed: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    // Step 5: Copy data to GPU (synchronous)
+    const char* data_ptr = raw + 12;
+    
+    err = cudaMemcpy(d_base, data_ptr, array_bytes, cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        cleanup_cuda_memory();
+        PyErr_Format(PyExc_RuntimeError, "cudaMemcpy d_base failed: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    err = cudaMemcpy(d_check, data_ptr + array_bytes, array_bytes, cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        cleanup_cuda_memory();
+        PyErr_Format(PyExc_RuntimeError, "cudaMemcpy d_check failed: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    err = cudaMemcpy(d_values, data_ptr + (array_bytes * 2), array_bytes, cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        cleanup_cuda_memory();
+        PyErr_Format(PyExc_RuntimeError, "cudaMemcpy d_values failed: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    // Step 6: Sync and verify
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        cleanup_cuda_memory();
+        PyErr_Format(PyExc_RuntimeError, "cudaDeviceSynchronize failed: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    trie_size = sz;
+    engine_loaded = true;
+    
+    // Return success info
+    return PyUnicode_FromFormat("Loaded %u entries (%.2f MB) to GPU", 
+                                 sz, (array_bytes * 3) / (1024.0 * 1024.0));
 }
 
+// --- BATCH TOKENIZATION ---
 static PyObject* tokenize_batch_gpu(PyObject* self, PyObject* args) {
     PyObject* list_obj;
     if (!PyArg_ParseTuple(args, "O", &list_obj)) return NULL;
-    if (!PyList_Check(list_obj)) {  // FIX: Type guard
+    
+    if (!PyList_Check(list_obj)) {
         PyErr_SetString(PyExc_TypeError, "Expected list of strings");
         return NULL;
     }
     
-    int n = PyList_Size(list_obj);
-    if (n == 0) return PyList_New(0);
+    Py_ssize_t n = PyList_Size(list_obj);
+    if (n == 0) {
+        return PyList_New(0);
+    }
     
-    // FIX: Safety Check
-    if (!cuda_loaded || !stream) {
-        PyErr_SetString(PyExc_RuntimeError, "CUDA Engine not loaded or stream invalid. Call load_profile() first.");
+    // Check engine state
+    if (!engine_loaded || !d_base || !d_check || !d_values) {
+        PyErr_SetString(PyExc_RuntimeError, "CUDA engine not loaded. Call load_gpu() first.");
         return NULL;
     }
-
-    // FIX: Pre-scan for lengths + dynamic max_tok
-    std::vector<Py_ssize_t> lens(n);
-    size_t total_chars = 0;
-    for (int i=0; i<n; ++i) {
-        PyObject* s = PyList_GetItem(list_obj, i);
-        if (!PyUnicode_Check(s)) { PyErr_SetString(PyExc_TypeError, "List items must be str"); return NULL; }
-        const char* p = PyUnicode_AsUTF8AndSize(s, &lens[i]);
-        if (!p) { PyErr_SetString(PyExc_ValueError, "Invalid UTF-8"); return NULL; }  // FIX: UTF-8 validate
-        total_chars += lens[i];
-    }
-    int avg_len = total_chars / n;
-    int max_tok = std::min(8192, avg_len * 2 + 512);  // FIX: Dynamic, safe cap
-
-    std::vector<char> pool;
+    
+    // Build text pool and offsets
+    std::vector<char> text_pool;
     std::vector<int> offsets;
-    offsets.reserve(n+1);
-    offsets.push_back(0);
-    pool.reserve(total_chars * 1.5);  // FIX: Over-alloc for safety
-
-    auto start_time = std::chrono::high_resolution_clock::now();  // FIX: Timing
-
-    for (int i=0; i<n; ++i) {
-        PyObject* s = PyList_GetItem(list_obj, i);
-        Py_ssize_t len = lens[i];
-        const char* p = PyUnicode_AsUTF8(s);  // Safe after size check
-        pool.insert(pool.end(), p, p + len);
-        offsets.push_back(pool.size());
-    }
-
-    // FIX: Device allocs with guard
-    char *d_text = nullptr;
-    int *d_offsets = nullptr, *d_out = nullptr, *d_counts = nullptr;
-    void* temp_ptrs[4] = {&d_text, &d_offsets, &d_out, &d_counts};
-    CudaMemGuard guard(temp_ptrs, 4);
-
-    CHECK_CUDA_ERR(cudaMallocAsync(&d_text, pool.size(), stream));
-    CHECK_CUDA_ERR(cudaMallocAsync(&d_offsets, offsets.size() * sizeof(int), stream));
-    CHECK_CUDA_ERR(cudaMallocAsync(&d_out, n * max_tok * sizeof(int), stream));
-    CHECK_CUDA_ERR(cudaMallocAsync(&d_counts, n * sizeof(int), stream));
-
-    CHECK_CUDA_ERR(cudaMemcpyAsync(d_text, pool.data(), pool.size(), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA_ERR(cudaMemcpyAsync(d_offsets, offsets.data(), offsets.size()*sizeof(int), cudaMemcpyHostToDevice, stream));
-
-    // FIX: Occupancy calc + launch
-    int threads = 256;
-    int blocks = (n + threads - 1) / threads;
-    // sh_mem = 0 because we use static __shared__ now
-    tokenize_kernel_cuda<<<blocks, threads, 0, stream>>>(
-        d_cuda_base, d_cuda_check, d_cuda_values, 
-        d_text, d_offsets, d_out, d_counts, n, max_tok, cuda_trie_size
-    );
-    CHECK_CUDA_ERR(cudaGetLastError());  // FIX: Immediate kernel check
-    CHECK_CUDA_ERR(cudaStreamSynchronize(stream));
-
-    std::vector<int> h_out(n * max_tok, 0);
-    std::vector<int> h_counts(n, 0);
+    offsets.reserve(n + 1);
     
-    CHECK_CUDA_ERR(cudaMemcpyAsync(h_out.data(), d_out, h_out.size()*sizeof(int), cudaMemcpyDeviceToHost, stream));
-    CHECK_CUDA_ERR(cudaMemcpyAsync(h_counts.data(), d_counts, n*sizeof(int), cudaMemcpyDeviceToHost, stream));
-    CHECK_CUDA_ERR(cudaStreamSynchronize(stream));
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    double ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
-
-    PyObject* res = PyList_New(n);
-    int total_tokens = 0;
-    for (int i=0; i<n; ++i) {
-        int c = h_counts[i];
-        total_tokens += c;
-        PyObject* sub = PyList_New(c);
-        int row_ptr = i * max_tok;
-        for (int k=0; k<c; ++k) {
-            PyObject* tok = PyLong_FromLong(h_out[row_ptr + k]);
-            PyList_SetItem(sub, k, tok);  // Steals ref
+    size_t total_chars = 0;
+    for (Py_ssize_t i = 0; i < n; ++i) {
+        PyObject* item = PyList_GetItem(list_obj, i);
+        if (!PyUnicode_Check(item)) {
+            PyErr_SetString(PyExc_TypeError, "List must contain only strings");
+            return NULL;
         }
-        PyList_SetItem(res, i, sub);
+        
+        Py_ssize_t len;
+        const char* str = PyUnicode_AsUTF8AndSize(item, &len);
+        if (!str) return NULL;
+        
+        offsets.push_back((int)total_chars);
+        text_pool.insert(text_pool.end(), str, str + len);
+        total_chars += len;
+    }
+    offsets.push_back((int)total_chars);
+    
+    // Calculate max tokens per sentence
+    size_t avg_len = total_chars / n;
+    int max_tok = (int)(avg_len * 2 + 64);
+    if (max_tok > 4096) max_tok = 4096;
+    if (max_tok < 64) max_tok = 64;
+    
+    // Allocate GPU buffers
+    char* d_text = nullptr;
+    int* d_offsets = nullptr;
+    int* d_out = nullptr;
+    int* d_counts = nullptr;
+    cudaError_t err;
+    
+    err = cudaMalloc((void**)&d_text, total_chars);
+    if (err != cudaSuccess) {
+        PyErr_Format(PyExc_RuntimeError, "cudaMalloc d_text failed: %s", cudaGetErrorString(err));
+        return NULL;
     }
     
-    // FIX: Free explicit (guard also does it)
-    cudaFreeAsync(d_text, stream);
-    cudaFreeAsync(d_offsets, stream);
-    cudaFreeAsync(d_out, stream);
-    cudaFreeAsync(d_counts, stream);
-
-    // FIX: Hyper-detailed metadata dict
+    err = cudaMalloc((void**)&d_offsets, offsets.size() * sizeof(int));
+    if (err != cudaSuccess) {
+        cudaFree(d_text);
+        PyErr_Format(PyExc_RuntimeError, "cudaMalloc d_offsets failed: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    err = cudaMalloc((void**)&d_out, n * max_tok * sizeof(int));
+    if (err != cudaSuccess) {
+        cudaFree(d_text); cudaFree(d_offsets);
+        PyErr_Format(PyExc_RuntimeError, "cudaMalloc d_out failed: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    err = cudaMalloc((void**)&d_counts, n * sizeof(int));
+    if (err != cudaSuccess) {
+        cudaFree(d_text); cudaFree(d_offsets); cudaFree(d_out);
+        PyErr_Format(PyExc_RuntimeError, "cudaMalloc d_counts failed: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    // Zero output buffers
+    cudaMemset(d_out, 0, n * max_tok * sizeof(int));
+    cudaMemset(d_counts, 0, n * sizeof(int));
+    
+    // Copy input data
+    cudaMemcpy(d_text, text_pool.data(), total_chars, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_offsets, offsets.data(), offsets.size() * sizeof(int), cudaMemcpyHostToDevice);
+    
+    // Launch kernel
+    int threads = 128;  // Conservative for stability
+    int blocks = ((int)n + threads - 1) / threads;
+    
+    tokenize_kernel<<<blocks, threads>>>(
+        d_base, d_check, d_values,
+        d_text, d_offsets, d_out, d_counts,
+        (int)n, max_tok, trie_size
+    );
+    
+    // Check for kernel errors
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        cudaFree(d_text); cudaFree(d_offsets); cudaFree(d_out); cudaFree(d_counts);
+        PyErr_Format(PyExc_RuntimeError, "Kernel launch failed: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    // Synchronize
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        cudaFree(d_text); cudaFree(d_offsets); cudaFree(d_out); cudaFree(d_counts);
+        PyErr_Format(PyExc_RuntimeError, "Kernel execution failed: %s", cudaGetErrorString(err));
+        return NULL;
+    }
+    
+    // Copy results back
+    std::vector<int> h_out(n * max_tok);
+    std::vector<int> h_counts(n);
+    
+    cudaMemcpy(h_out.data(), d_out, n * max_tok * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_counts.data(), d_counts, n * sizeof(int), cudaMemcpyDeviceToHost);
+    
+    // Cleanup GPU buffers
+    cudaFree(d_text);
+    cudaFree(d_offsets);
+    cudaFree(d_out);
+    cudaFree(d_counts);
+    
+    // Build Python result
+    PyObject* result = PyList_New(n);
+    for (Py_ssize_t i = 0; i < n; ++i) {
+        int count = h_counts[i];
+        PyObject* tokens = PyList_New(count);
+        for (int j = 0; j < count; ++j) {
+            PyList_SetItem(tokens, j, PyLong_FromLong(h_out[i * max_tok + j]));
+        }
+        PyList_SetItem(result, i, tokens);
+    }
+    
+    // Return tuple (results, metadata)
     PyObject* meta = PyDict_New();
-    PyDict_SetItemString(meta, "total_tokens", PyLong_FromLong(total_tokens));
-    PyDict_SetItemString(meta, "processing_time_ms", PyFloat_FromDouble(ms));
-    PyDict_SetItemString(meta, "avg_tokens_per_sent", PyFloat_FromDouble(total_tokens / (double)n));
-    PyDict_SetItemString(meta, "max_capacity_used", PyLong_FromLong(max_tok));
-
-    PyObject* full_res = PyTuple_New(2);
-    PyTuple_SetItem(full_res, 0, res);
-    PyTuple_SetItem(full_res, 1, meta);
-    return full_res;
+    PyDict_SetItemString(meta, "sentences", PyLong_FromSsize_t(n));
+    PyDict_SetItemString(meta, "max_tokens_per_sentence", PyLong_FromLong(max_tok));
+    
+    PyObject* full_result = PyTuple_New(2);
+    PyTuple_SetItem(full_result, 0, result);
+    PyTuple_SetItem(full_result, 1, meta);
+    
+    return full_result;
 }
 
-// FIX: Module destructor for cleanup
+// --- MODULE CLEANUP ---
 static void module_cleanup(void* module) {
-    if (stream) cudaStreamDestroy(stream);
-    if (d_cuda_base) cudaFree(d_cuda_base);
-    if (d_cuda_check) cudaFree(d_cuda_check);
-    if (d_cuda_values) cudaFree(d_cuda_values);
+    cleanup_cuda_memory();
 }
 
+// --- MODULE DEFINITION ---
 static PyMethodDef CudaMethods[] = {
-    {"load_gpu", load_gpu, METH_VARARGS, "Load DAT into CUDA VRAM (with telemetry)"},
-    {"tokenize_batch_gpu", tokenize_batch_gpu, METH_VARARGS, "CUDA Kernel Execute (returns tokens + metadata)"},
-    {"get_hardware_info", get_hardware_info, METH_VARARGS, "Get CUDA Telemetry (enhanced)"},
+    {"load_gpu", load_gpu, METH_VARARGS, "Load DAT vocabulary to GPU memory"},
+    {"tokenize_batch_gpu", tokenize_batch_gpu, METH_VARARGS, "Tokenize batch of strings on GPU"},
+    {"get_hardware_info", get_hardware_info, METH_VARARGS, "Get CUDA device information"},
     {NULL, NULL, 0, NULL}
 };
 
 static struct PyModuleDef cuda_module = {
-    PyModuleDef_HEAD_INIT, "crayon_cuda", "NVIDIA CUDA Backend - Optimized", -1, CudaMethods,
-    NULL, NULL, NULL, module_cleanup  // FIX: Cleanup hook
+    PyModuleDef_HEAD_INIT,
+    "crayon_cuda",
+    "XERV Crayon CUDA Backend v3.0 - Production Grade",
+    -1,
+    CudaMethods,
+    NULL, NULL, NULL,
+    module_cleanup
 };
 
 PyMODINIT_FUNC PyInit_crayon_cuda(void) {
