@@ -5,6 +5,6 @@ include LICENSE
 recursive-include src/crayon *.py
 recursive-include src/crayon *.pyi
 recursive-include src/crayon/resources *
-recursive-include src/crayon/c_ext *.h *.c *.cpp *.cu
+recursive-include src/crayon/c_ext *.h *.c *.cpp *.cu *.hip
 global-exclude *.pyc
 global-exclude __pycache__

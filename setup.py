@@ -1,25 +1,38 @@
 """
-XERV CRAYON SETUP - Production Omni-Backend Build System
-=========================================================
+XERV CRAYON SETUP v4.3.0 - Production Omni-Backend Build System
+================================================================
 
-Features:
-- PyTorch CUDAExtension for reliable NVCC compilation
-- Automatic fallback to CPU if CUDA/ROCm unavailable
-- Smart Architecture Detection: Compiles only for the active GPU to save RAM/Time
-- MAX_JOBS control to prevent OOM
+CRITICAL FIX for ROCm/HIP Compilation:
+--------------------------------------
+The ROCm engine uses HIP kernel syntax (__global__, blockIdx, hipLaunchKernelGGL)
+which REQUIRES the hipcc compiler. Standard g++ CANNOT compile these.
+
+This setup.py implements:
+1. Custom build_ext that explicitly invokes hipcc for .hip files
+2. PyTorch CUDAExtension for reliable NVCC compilation
+3. Automatic fallback to CPU if CUDA/ROCm unavailable
+4. Smart Architecture Detection: Compiles only for the active GPU to save RAM/Time
+5. MAX_JOBS control to prevent OOM
+
+Supported Backends:
+- CPU: AVX2/AVX-512 (always built)
+- CUDA: NVIDIA via PyTorch CUDAExtension
+- ROCm: AMD via hipcc direct invocation
 """
 
 import os
 import sys
+import subprocess
 import shutil
 from setuptools import setup, Extension, find_packages
 from setuptools.command.build_ext import build_ext
+from distutils.sysconfig import get_python_inc
 
 # ============================================================================
 # VERSION
 # ============================================================================
 
-VERSION = "4.2.6"
+VERSION = "4.3.0"
 
 # ============================================================================
 # PRE-FLIGHT CHECKS
@@ -47,7 +60,14 @@ except ImportError:
 
 # Detect ROCm
 ROCM_HOME = os.environ.get("ROCM_HOME", "/opt/rocm")
-HAS_ROCM = os.path.exists(os.path.join(ROCM_HOME, "bin", "hipcc"))
+HIPCC_PATH = os.path.join(ROCM_HOME, "bin", "hipcc")
+HAS_ROCM = os.path.exists(HIPCC_PATH)
+
+if HAS_ROCM:
+    log(f"ROCm detected at {ROCM_HOME}")
+    log(f"hipcc found at {HIPCC_PATH}")
+else:
+    log("ROCm not detected - skipping AMD backend")
 
 
 # ============================================================================
@@ -90,6 +110,84 @@ def get_cuda_arch_flags():
 
 
 # ============================================================================
+# CUSTOM BUILD CLASS FOR HIP COMPILATION
+# ============================================================================
+
+class CrayonBuildExt(build_ext):
+    """
+    Custom build_ext that:
+    1. Compiles .hip files using hipcc directly
+    2. Falls back to standard behavior for other extensions
+    """
+    
+    def build_extension(self, ext):
+        # Check if this is the ROCm extension that needs hipcc
+        if hasattr(ext, '_needs_hipcc') and ext._needs_hipcc:
+            self._build_hip_extension(ext)
+        else:
+            # Use standard build for CPU and CUDA extensions
+            super().build_extension(ext)
+    
+    def _build_hip_extension(self, ext):
+        """Build HIP extension using hipcc directly"""
+        log(f"Building {ext.name} with hipcc...")
+        
+        # Get output path
+        fullname = self.get_ext_fullname(ext.name)
+        filename = self.get_ext_filename(ext.name)
+        modpath = fullname.split('.')
+        
+        # Create output directory
+        ext_filepath = os.path.join(self.build_lib, *modpath[:-1], modpath[-1] + '.cpython-' + 
+                                    str(sys.version_info.major) + str(sys.version_info.minor) + 
+                                    '-x86_64-linux-gnu.so')
+        
+        # Use the proper extension filename
+        ext_filepath = os.path.join(self.build_lib, filename)
+        
+        os.makedirs(os.path.dirname(ext_filepath), exist_ok=True)
+        
+        # Get Python include directories
+        python_include = get_python_inc()
+        
+        # Build hipcc command
+        hip_source = ext.sources[0]  # Should be the .hip file
+        
+        # hipcc compilation command
+        cmd = [
+            HIPCC_PATH,
+            "-O3",
+            "-std=c++17",
+            "-fPIC",
+            "-shared",
+            "-D__HIP_PLATFORM_AMD__",
+            f"-I{python_include}",
+            f"-I{ROCM_HOME}/include",
+            f"-L{ROCM_HOME}/lib",
+            "-lamdhip64",
+        ]
+        
+        # Add any additional include dirs
+        for inc_dir in ext.include_dirs:
+            cmd.append(f"-I{inc_dir}")
+        
+        # Add output and source
+        cmd.extend(["-o", ext_filepath, hip_source])
+        
+        log(f"Executing: {' '.join(cmd)}")
+        
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            if result.stdout:
+                print(result.stdout)
+            log(f"Successfully built {ext.name}")
+        except subprocess.CalledProcessError as e:
+            print(f"HIPCC STDOUT:\n{e.stdout}")
+            print(f"HIPCC STDERR:\n{e.stderr}")
+            raise RuntimeError(f"hipcc compilation failed for {ext.name}") from e
+
+
+# ============================================================================
 # EXTENSION CONFIGURATION
 # ============================================================================
 
@@ -129,27 +227,45 @@ elif not FORCE_CPU and CUDAExtension:
     log("Skipping CUDA extension (PyTorch CUDA not found or CUDA_HOME missing)")
 
 
-# --- 3. ROCm Extension ---
+# --- 3. ROCm Extension (AMD - using hipcc directly) ---
 if HAS_ROCM and not FORCE_CPU:
     log(f"Configuring ROCm extension (HOME={ROCM_HOME})")
-    ext_modules.append(Extension(
+    
+    # Create a custom extension marker for HIP files
+    hip_ext = Extension(
         "crayon.c_ext.crayon_rocm",
-        sources=["src/crayon/c_ext/rocm_engine.cpp"],
-        libraries=["amdhip64"],
-        library_dirs=[os.path.join(ROCM_HOME, "lib")],
+        sources=["src/crayon/c_ext/rocm_engine.hip"],  # .hip file!
         include_dirs=[os.path.join(ROCM_HOME, "include")],
-        extra_compile_args=["-O3", "-std=c++17", "-fPIC", "-D__HIP_PLATFORM_AMD__"],
+        library_dirs=[os.path.join(ROCM_HOME, "lib")],
+        libraries=["amdhip64"],
         language="c++",
-    ))
+    )
+    # Mark this extension as needing hipcc
+    hip_ext._needs_hipcc = True
+    ext_modules.append(hip_ext)
 
 
 # ============================================================================
 # BUILD STRATEGY
 # ============================================================================
 
-cmdclass = {}
-if BuildExtension and (TORCH_CUDA_AVAILABLE or HAS_ROCM):
-    cmdclass["build_ext"] = BuildExtension.with_options(no_python_abi_suffix=True)
+# Choose the right build command class
+if HAS_ROCM and not FORCE_CPU:
+    # Use our custom build class that handles hipcc
+    log("Using CrayonBuildExt for HIP compilation")
+    cmdclass = {"build_ext": CrayonBuildExt}
+elif BuildExtension and TORCH_CUDA_AVAILABLE:
+    # Use PyTorch's BuildExtension for CUDA
+    log("Using PyTorch BuildExtension for CUDA compilation")
+    cmdclass = {"build_ext": BuildExtension.with_options(no_python_abi_suffix=True)}
+else:
+    # Use default
+    cmdclass = {}
+
+
+# ============================================================================
+# SETUP ENTRY POINT
+# ============================================================================
 
 setup(
     name="xerv-crayon",

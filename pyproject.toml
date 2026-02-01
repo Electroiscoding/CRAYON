@@ -1,14 +1,14 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel", "setuptools-scm>=8.0"]
+requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "xerv-crayon"
-version = "4.1.9"
+version = "4.3.0"
 description = "Omni-Backend Tokenizer - CPU (AVX2/512), CUDA (NVIDIA), ROCm (AMD) with automatic hardware detection"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {file = "LICENSE"}
+license = "MIT"
 authors = [
   {name = "Xerv Research Engineering Division", email = "engineering@xerv.ai"}
 ]
@@ -20,6 +20,7 @@ keywords = [
     "avx512",
     "cuda",
     "rocm",
+    "hip",
     "gpu",
     "high-performance", 
     "zero-copy",
@@ -37,7 +38,6 @@ classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -76,10 +76,10 @@ benchmark = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/xerv/crayon"
-Repository = "https://github.com/xerv/crayon.git"
-Documentation = "https://github.com/xerv/crayon#readme"
-"Bug Tracker" = "https://github.com/xerv/crayon/issues"
+Homepage = "https://github.com/Electroiscoding/CRAYON"
+Repository = "https://github.com/Electroiscoding/CRAYON.git"
+Documentation = "https://github.com/Electroiscoding/CRAYON#readme"
+"Bug Tracker" = "https://github.com/Electroiscoding/CRAYON/issues"
 
 [project.scripts]
 crayon-benchmark = "crayon.cli:run_benchmark"
@@ -99,7 +99,8 @@ where = ["src"]
     "c_ext/*.h",
     "c_ext/*.c",
     "c_ext/*.cpp",
-    "c_ext/*.cu"
+    "c_ext/*.cu",
+    "c_ext/*.hip"
 ]
 
 [tool.pytest.ini_options]

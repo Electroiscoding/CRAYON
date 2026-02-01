@@ -1,10 +1,16 @@
 """
-XERV CRAYON V4.1.9 - Production Omni-Backend Tokenizer
+XERV CRAYON V4.3.0 - Production Omni-Backend Tokenizer
 =======================================================
 Copy this ENTIRE script into a Google Colab cell and run it.
 
 IMPORTANT: Enable GPU runtime first:
 Runtime -> Change runtime type -> GPU (T4/V100/A100)
+
+WHAT'S NEW in v4.3.0:
+- Fixed ROCm/HIP compilation: Now properly uses hipcc instead of g++
+- Full support for AMD GPUs (MI250/MI300, Radeon RX 7000+)
+- Production-grade error handling across all backends
+- Python 3.10-3.13 fully supported
 """
 
 import subprocess
@@ -13,7 +19,7 @@ import os
 import time
 
 print("=" * 70)
-print("XERV CRAYON V4.1.9 INSTALLATION AND BENCHMARKS")
+print("XERV CRAYON V4.3.0 INSTALLATION AND BENCHMARKS")
 print("=" * 70)
 
 # 1. Environment Check
@@ -29,11 +35,18 @@ try:
 except ImportError:
     print("      PyTorch not found (will be installed)")
 
+# Check for NVCC (NVIDIA) or hipcc (AMD)
 nvcc_check = subprocess.run(["which", "nvcc"], capture_output=True, text=True)
 if nvcc_check.returncode == 0:
     print(f"      NVCC: {nvcc_check.stdout.strip()}")
 else:
     print("      NVCC: Not found")
+
+hipcc_check = subprocess.run(["which", "hipcc"], capture_output=True, text=True)
+if hipcc_check.returncode == 0:
+    print(f"      HIPCC (ROCm): {hipcc_check.stdout.strip()}")
+else:
+    print("      HIPCC (ROCm): Not found")
 
 
 # 2. Build Dependencies
@@ -70,6 +83,7 @@ print("-" * 70)
 build_env = os.environ.copy()
 build_env["MAX_JOBS"] = "1"      # Force serial build to prevent OOM
 build_env["CUDA_HOME"] = "/usr/local/cuda"
+# ROCm is auto-detected via /opt/rocm
 
 # Stream output line-by-line
 cmd = [sys.executable, "-m", "pip", "install", "-v", "--no-build-isolation", clone_dir]
@@ -127,6 +141,8 @@ print(f"Backend: {info['backend']}")
 
 if vocab.device == "cpu" and backends.get("cuda"):
     print("NOTE: Running on CPU but CUDA is available. Use device='cuda' to force.")
+if vocab.device == "cpu" and backends.get("rocm"):
+    print("NOTE: Running on CPU but ROCm is available. Use device='rocm' to force.")
 
 # Throughput test
 text = "The quick brown fox jumps over the lazy dog."
@@ -144,4 +160,19 @@ for bs in batch_sizes:
     toks = sum(len(x) for x in res)
     print(f"  {bs:>8,} docs: {bs/dur:>12,.0f} docs/sec | {toks/dur:>14,.0f} tokens/sec")
 
-print("\nDone!")
+print("\n" + "=" * 70)
+print("INSTALLATION COMPLETE!")
+print("=" * 70)
+print("""
+Quick Start:
+    from crayon import CrayonVocab
+    
+    vocab = CrayonVocab(device='auto')
+    vocab.load_profile('lite')
+    
+    tokens = vocab.tokenize("Hello, world!")
+    print(tokens)
+
+Available Profiles: 'lite', 'code', 'science', 'multilingual', 'arts_commerce'
+Available Devices: 'auto', 'cpu', 'cuda', 'rocm'
+""")
