@@ -3,8 +3,6 @@ import unittest
 import sys
 from pathlib import Path
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from crayon.core.vocabulary import CrayonVocab
 from crayon.core.primitives import TokenMetadata

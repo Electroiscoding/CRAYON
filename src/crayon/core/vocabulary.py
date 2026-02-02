@@ -1034,6 +1034,38 @@ class CrayonVocab:
         """Check if a profile is currently loaded."""
         return self._profile_loaded
 
+    @property
+    def fast_mode(self) -> bool:
+        """Check if running in high-performance mode (C++ backend)."""
+        return self.device in ("cpu", "cuda", "rocm") and (self._cpu_backend is not None or self._gpu_backend is not None)
+
+    def longest_match(self, text: str, pos: int = 0) -> Tuple[int, int]:
+        """
+        Find the longest matching token at the given position (Compatibility Mode).
+        
+        Note: This is slower than tokenize() as it creates a substring.
+        """
+        if pos >= len(text):
+            return self.unk_token_id, 0
+            
+        # Optimization: We only need to check a reasonable window
+        # The longest token is rarely more than 100 characters.
+        window = text[pos : pos + 128]
+        tokens = self.tokenize(window)
+        
+        if not tokens:
+            return self.unk_token_id, 1
+            
+        # Get the first token ID
+        first_id = tokens[0]
+        
+        # Get its length from id_to_token
+        if 0 <= first_id < len(self._idx_to_str):
+            token_str = self._idx_to_str[first_id]
+            return first_id, len(token_str)
+        else:
+            return self.unk_token_id, 1
+
 
 # ============================================================================
 # CONVENIENCE FUNCTIONS
