@@ -1,33 +1,33 @@
 {
-  "date": "2026-01-25T23:32:20.669370",
+  "date": "2026-02-02T21:46:22.756992",
   "test_text_bytes": 30800,
   "iterations": 10,
   "results": [
+    {
+      "name": "CRAYON (CPU - code)",
+      "status": "OK",
+      "vocab_size": "~250k",
+      "avg_tokens": 30800.0,
+      "token_count": 30800,
+      "load_time_ms": 128.97940003313124,
+      "avg_time_ms": 1.2961800443008542,
+      "min_time_ms": 1.007900107651949,
+      "max_time_ms": 2.303199842572212,
+      "tokens_per_sec": 23762130.990539353,
+      "mb_per_sec": 22.661334028758386
+    },
     {
       "name": "CRAYON (CPU - science)",
       "status": "OK",
       "vocab_size": "~250k",
       "avg_tokens": 24900.0,
       "token_count": 24900,
-      "load_time_ms": 0.7735000690445304,
-      "avg_time_ms": 1.1799499741755426,
-      "min_time_ms": 1.0254000080749393,
-      "max_time_ms": 1.4116999227553606,
-      "tokens_per_sec": 21102589.554610725,
-      "mb_per_sec": 24.893571412496694
-    },
-    {
-      "name": "CRAYON (CPU - code)",
-      "status": "OK",
-      "vocab_size": "~250k",
-      "avg_tokens": 22100.0,
-      "token_count": 22100,
-      "load_time_ms": 0.5583000602200627,
-      "avg_time_ms": 1.5503000118769705,
-      "min_time_ms": 1.3770000077784061,
-      "max_time_ms": 1.7841000808402896,
-      "tokens_per_sec": 14255305.31554548,
-      "mb_per_sec": 18.946764316766007
+      "load_time_ms": 3.807599889114499,
+      "avg_time_ms": 1.3703399803489447,
+      "min_time_ms": 0.9711999446153641,
+      "max_time_ms": 2.43859994225204,
+      "tokens_per_sec": 18170673.232243754,
+      "mb_per_sec": 21.43494998798246
     },
     {
       "name": "CRAYON (CPU - lite)",
@@ -35,12 +35,12 @@
       "vocab_size": "50k",
       "avg_tokens": 15700.0,
       "token_count": 15700,
-      "load_time_ms": 0.9637000039219856,
-      "avg_time_ms": 1.5315299853682518,
-      "min_time_ms": 1.0757999261841178,
-      "max_time_ms": 1.921099959872663,
-      "tokens_per_sec": 10251186.81971152,
-      "mb_per_sec": 19.178970850022115
+      "load_time_ms": 20.62970004044473,
+      "avg_time_ms": 1.5809000004082918,
+      "min_time_ms": 1.2891001533716917,
+      "max_time_ms": 1.9415998831391335,
+      "tokens_per_sec": 9931051.929878697,
+      "mb_per_sec": 18.580029690509473
     },
     {
       "name": "tiktoken (p50k/GPT-3)",
@@ -48,12 +48,12 @@
       "vocab_size": 50000,
       "avg_tokens": 11900.0,
       "token_count": 11900,
-      "load_time_ms": 0.005600042641162872,
-      "avg_time_ms": 33.36473002564162,
-      "min_time_ms": 27.524500037543476,
-      "max_time_ms": 50.97740003839135,
-      "tokens_per_sec": 356664.0578495482,
-      "mb_per_sec": 0.8803658510870158
+      "load_time_ms": 0.008899951353669167,
+      "avg_time_ms": 28.1568999402225,
+      "min_time_ms": 21.030299831181765,
+      "max_time_ms": 55.71989994496107,
+      "tokens_per_sec": 422631.7536825385,
+      "mb_per_sec": 1.0431961262664624
     },
     {
       "name": "tiktoken (cl100k/GPT-4)",
@@ -61,38 +61,12 @@
       "vocab_size": 100000,
       "avg_tokens": 9000.0,
       "token_count": 9000,
-      "load_time_ms": 0.007899943739175797,
-      "avg_time_ms": 28.565260011237115,
-      "min_time_ms": 22.96640002168715,
-      "max_time_ms": 49.08689996227622,
-      "tokens_per_sec": 315068.0230622632,
-      "mb_per_sec": 1.028282918963719
-    },
-    {
-      "name": "HF GPT-2 (BPE)",
-      "status": "OK",
-      "vocab_size": 50257,
-      "avg_tokens": 15700.0,
-      "token_count": 15700,
-      "load_time_ms": 1755.1474999636412,
-      "avg_time_ms": 54.14273998467252,
-      "min_time_ms": 45.86610000114888,
-      "max_time_ms": 60.17670000437647,
-      "tokens_per_sec": 289974.2422427194,
-      "mb_per_sec": 0.5425135291200236
-    },
-    {
-      "name": "HF LLaMA (SP-BPE)",
-      "status": "OK",
-      "vocab_size": 32000,
-      "avg_tokens": 11401.0,
-      "token_count": 11401,
-      "load_time_ms": 1712.584999972023,
-      "avg_time_ms": 54.19678996549919,
-      "min_time_ms": 44.12639990914613,
-      "max_time_ms": 75.18829999025911,
-      "tokens_per_sec": 210363.0124082569,
-      "mb_per_sec": 0.5419724851603017
+      "load_time_ms": 0.011600088328123093,
+      "avg_time_ms": 23.468929948285222,
+      "min_time_ms": 20.06639982573688,
+      "max_time_ms": 35.85169999860227,
+      "tokens_per_sec": 383485.74135386146,
+      "mb_per_sec": 1.2515768298783763
     },
     {
       "name": "HF T5 (SentencePiece)",
@@ -100,12 +74,38 @@
       "vocab_size": 32000,
       "avg_tokens": 12601.0,
       "token_count": 12601,
-      "load_time_ms": 1844.303600024432,
-      "avg_time_ms": 68.39936999604106,
-      "min_time_ms": 53.734099958091974,
-      "max_time_ms": 93.08540006168187,
-      "tokens_per_sec": 184226.8430356792,
-      "mb_per_sec": 0.4294362498808485
+      "load_time_ms": 1777.7703001629561,
+      "avg_time_ms": 32.928459998220205,
+      "min_time_ms": 32.26630017161369,
+      "max_time_ms": 34.046499989926815,
+      "tokens_per_sec": 382678.08457125194,
+      "mb_per_sec": 0.8920298412649765
+    },
+    {
+      "name": "HF LLaMA (SP-BPE)",
+      "status": "OK",
+      "vocab_size": 32000,
+      "avg_tokens": 11401.0,
+      "token_count": 11401,
+      "load_time_ms": 1174.7749999631196,
+      "avg_time_ms": 39.65424003545195,
+      "min_time_ms": 30.960500007495284,
+      "max_time_ms": 45.88270001113415,
+      "tokens_per_sec": 287510.2382445661,
+      "mb_per_sec": 0.7407321113467842
+    },
+    {
+      "name": "HF GPT-2 (BPE)",
+      "status": "OK",
+      "vocab_size": 50257,
+      "avg_tokens": 15700.0,
+      "token_count": 15700,
+      "load_time_ms": 1819.5615001022816,
+      "avg_time_ms": 73.55678000021726,
+      "min_time_ms": 61.30379997193813,
+      "max_time_ms": 98.4288000036031,
+      "tokens_per_sec": 213440.55571700702,
+      "mb_per_sec": 0.3993264651501295
     },
     {
       "name": "HF BERT (WordPiece)",
@@ -113,12 +113,12 @@
       "vocab_size": 30522,
       "avg_tokens": 11402.0,
       "token_count": 11402,
-      "load_time_ms": 1531.154999975115,
-      "avg_time_ms": 68.3790200157091,
-      "min_time_ms": 41.35249997489154,
-      "max_time_ms": 109.04680006206036,
-      "tokens_per_sec": 166747.05190832735,
-      "mb_per_sec": 0.4295640525202677
+      "load_time_ms": 1832.9594999086112,
+      "avg_time_ms": 58.81147999316454,
+      "min_time_ms": 50.545900128781796,
+      "max_time_ms": 68.34379979409277,
+      "tokens_per_sec": 193873.71311392295,
+      "mb_per_sec": 0.49944617868359115
     }
   ]
 }

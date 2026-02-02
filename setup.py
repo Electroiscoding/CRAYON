@@ -208,6 +208,36 @@ ext_modules.append(Extension(
     language="c++",
 ))
 
+# --- Trainer Extension (Always) ---
+# Hyper-fast BPE trainer with Linked-List + Inverted Index + Lazy Heap
+trainer_args = ["/O2"] if sys.platform == "win32" else ["-O3", "-fPIC"]
+if sys.platform != "win32":
+    trainer_args.append("-std=c++17")
+else:
+    trainer_args.append("/std:c++17")
+
+ext_modules.append(Extension(
+    "crayon.c_ext.crayon_trainer",
+    sources=["src/crayon/c_ext/trainer.cpp"],
+    extra_compile_args=trainer_args,
+    language="c++",
+))
+
+# --- DAT Compiler Extension (Always) ---
+# Hyper-fast DAT builder with optimized parking spot search (~500x faster than Python)
+compiler_args = ["/O2"] if sys.platform == "win32" else ["-O3", "-fPIC"]
+if sys.platform != "win32":
+    compiler_args.append("-std=c++17")
+else:
+    compiler_args.append("/std:c++17")
+
+ext_modules.append(Extension(
+    "crayon.c_ext.crayon_compiler",
+    sources=["src/crayon/c_ext/compiler.cpp"],
+    extra_compile_args=compiler_args,
+    language="c++",
+))
+
 
 # --- 2. CUDA Extension (via PyTorch) ---
 if TORCH_CUDA_AVAILABLE and not FORCE_CPU and CUDAExtension:

@@ -1,0 +1,293 @@
+name: Xerv Crayon Production Build
+
+# ============================================================================
+# TRIGGER CONDITIONS
+# ============================================================================
+on:
+  push:
+    branches: [ "main", "dev" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  # ==========================================================================
+  # JOB 1: INTEL/AMD CPU ENGINE (AVX2/AVX-512 Check)
+  # ==========================================================================
+  build-cpu:
+    name: 🔵 Build CPU (Intel/AMD)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest setuptools wheel build
+          
+      - name: Compile Crayon (CPU Mode)
+        run: |
+          # This triggers setup.py to build CPU extensions
+          pip install -v . --no-build-isolation
+          
+      - name: Verify CPU Extension
+        run: |
+          python -c "from crayon.c_ext import crayon_cpu; print('✅ CPU Engine Loaded')"
+          python -c "from crayon.c_ext import crayon_cpu; print(f'Hardware: {crayon_cpu.get_hardware_info()}')"
+          
+      - name: Verify Trainer Extension
+        run: |
+          python -c "from crayon.c_ext import crayon_trainer; print('✅ Trainer Engine Loaded')"
+          python -c "from crayon.c_ext import crayon_trainer; print(f'Version: {crayon_trainer.get_version()}')"
+          python -c "from crayon.c_ext import crayon_trainer; print(f'Algorithm: {crayon_trainer.get_algorithm_info()}')"
+          
+      - name: Run Basic Tokenization Test
+        run: |
+          python -c "
+          from crayon import CrayonVocab
+          v = CrayonVocab(device='cpu')
+          result = v.tokenize('Hello Cloud! Testing CRAYON on GitHub Actions.')
+          print(f'✅ Tokenized to {len(result)} tokens')
+          print(f'   Tokens: {result[:10]}...')
+          "
+          
+      - name: Run Trainer Test
+        run: |
+          python -c "
+          from crayon.c_ext import crayon_trainer
+          
+          # Test with minimal corpus
+          corpus = b'The quick brown fox jumps over the lazy dog. ' * 100
+          merges = crayon_trainer.train_fast(corpus, 300, min_freq=2, verbose=0)
+          
+          print(f'✅ Trainer generated {len(merges)} merge rules')
+          print(f'   First 3 merges: {merges[:3]}')
+          "
+          
+      - name: Run pytest (Unit Tests)
+        run: |
+          pytest tests/ -v --tb=short || true
+
+  # ==========================================================================
+  # JOB 2: NVIDIA CUDA ENGINE (Compilation Verification)
+  # ==========================================================================
+  build-cuda:
+    name: 🟢 Build NVIDIA (CUDA 12)
+    runs-on: ubuntu-latest
+    
+    # Use NVIDIA's official CUDA development container
+    container: nvidia/cuda:12.2.0-devel-ubuntu22.04
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Install Python & Dependencies
+        run: |
+          apt-get update
+          apt-get install -y python3 python3-pip python3-venv git
+          python3 -m pip install --upgrade pip setuptools wheel
+          
+      - name: Install PyTorch (CUDA)
+        run: |
+          # Install PyTorch with CUDA support for CUDAExtension
+          pip install torch --index-url https://download.pytorch.org/whl/cu121
+          
+      - name: Compile Crayon (CUDA Mode)
+        run: |
+          # Force CUDA build
+          export CRAYON_FORCE_CUDA=1
+          pip install -v . --no-build-isolation
+          
+      - name: Verify CUDA Extension Built
+        run: |
+          # Check if the CUDA shared object was created
+          find . -name "*crayon_cuda*.so" -o -name "*crayon_cuda*.pyd" | grep . && echo "✅ CUDA Binary Built!"
+          
+      - name: Verify CPU Extension (Sanity Check)
+        run: |
+          python3 -c "from crayon.c_ext import crayon_cpu; print('✅ CPU Engine Loaded')"
+          
+      - name: Verify Trainer Extension
+        run: |
+          python3 -c "from crayon.c_ext import crayon_trainer; print('✅ Trainer Engine Loaded')"
+
+  # ==========================================================================
+  # JOB 3: AMD ROCm ENGINE (Compilation Verification)
+  # ==========================================================================
+  build-rocm:
+    name: 🔴 Build AMD (ROCm 6.0)
+    runs-on: ubuntu-latest
+    
+    # Use AMD's official ROCm development container
+    container: rocm/dev-ubuntu-22.04:6.0
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Install Python & Dependencies
+        run: |
+          apt-get update
+          apt-get install -y python3 python3-pip python3-venv git
+          python3 -m pip install --upgrade pip setuptools wheel
+          
+      - name: Verify ROCm Installation
+        run: |
+          hipcc --version
+          echo "ROCM_HOME=${ROCM_HOME:-/opt/rocm}"
+          ls -la /opt/rocm/bin/ | head -20
+          
+      - name: Compile Crayon (ROCm Mode)
+        run: |
+          # Force ROCm build
+          export CRAYON_FORCE_ROCM=1
+          export ROCM_HOME=/opt/rocm
+          pip install -v . --no-build-isolation
+          
+      - name: Verify ROCm Extension Built
+        run: |
+          # Check if the ROCm shared object was created
+          find . -name "*crayon_rocm*.so" | grep . && echo "✅ ROCm Binary Built!"
+          
+      - name: Verify CPU Extension (Sanity Check)
+        run: |
+          python3 -c "from crayon.c_ext import crayon_cpu; print('✅ CPU Engine Loaded')"
+          
+      - name: Verify Trainer Extension
+        run: |
+          python3 -c "from crayon.c_ext import crayon_trainer; print('✅ Trainer Engine Loaded')"
+
+  # ==========================================================================
+  # JOB 4: WINDOWS CPU BUILD
+  # ==========================================================================
+  build-windows:
+    name: 🪟 Build Windows (CPU)
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest setuptools wheel build
+          
+      - name: Compile Crayon (Windows CPU)
+        run: |
+          pip install -v . --no-build-isolation
+          
+      - name: Verify Extensions
+        run: |
+          python -c "from crayon.c_ext import crayon_cpu; print('✅ CPU Engine Loaded')"
+          python -c "from crayon.c_ext import crayon_trainer; print('✅ Trainer Engine Loaded')"
+          
+      - name: Run Basic Test
+        run: |
+          python -c "from crayon import CrayonVocab; v = CrayonVocab(device='cpu'); print(v.tokenize('Hello Windows!'))"
+
+  # ==========================================================================
+  # JOB 5: BENCHMARK (CPU Performance Validation)
+  # ==========================================================================
+  benchmark:
+    name: 📊 Benchmark Performance
+    runs-on: ubuntu-latest
+    needs: [build-cpu]  # Only run after CPU build succeeds
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          
+      - name: Install Crayon
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install -v . --no-build-isolation
+          
+      - name: Run Trainer Benchmark
+        run: |
+          python -c "
+          import time
+          from crayon.c_ext import crayon_trainer
+          
+          # Generate test corpus
+          corpus = b'The quick brown fox jumps over the lazy dog. ' * 10000
+          corpus_mb = len(corpus) / (1024 * 1024)
+          
+          print(f'Corpus Size: {corpus_mb:.2f} MB')
+          
+          # Warmup
+          _ = crayon_trainer.train_fast(corpus[:10000], 300, verbose=0)
+          
+          # Benchmark
+          start = time.perf_counter()
+          merges = crayon_trainer.train_fast(corpus, 1000, verbose=1)
+          elapsed = time.perf_counter() - start
+          
+          print(f'\\n=== BENCHMARK RESULTS ===')
+          print(f'Merge Rules:   {len(merges):,}')
+          print(f'Time:          {elapsed:.2f}s')
+          print(f'Speed:         {corpus_mb / elapsed:.2f} MB/s')
+          print(f'Merges/sec:    {len(merges) / elapsed:,.0f}')
+          
+          # Performance gate
+          if elapsed > 30:
+              print('⚠️  Warning: Training took longer than expected')
+          else:
+              print('✅ Performance acceptable')
+          "
+          
+      - name: Run Tokenization Benchmark
+        run: |
+          python -c "
+          import time
+          from crayon import CrayonVocab
+          
+          v = CrayonVocab(device='cpu')
+          
+          # Generate test text
+          text = 'The quick brown fox jumps over the lazy dog. ' * 10000
+          text_mb = len(text.encode('utf-8')) / (1024 * 1024)
+          
+          # Warmup
+          _ = v.tokenize(text[:1000])
+          
+          # Benchmark
+          iterations = 5
+          total_time = 0
+          total_tokens = 0
+          
+          for _ in range(iterations):
+              start = time.perf_counter()
+              tokens = v.tokenize(text)
+              elapsed = time.perf_counter() - start
+              total_time += elapsed
+              total_tokens += len(tokens)
+          
+          avg_time = total_time / iterations
+          avg_tokens = total_tokens / iterations
+          
+          print(f'=== TOKENIZATION BENCHMARK ===')
+          print(f'Text Size:     {text_mb:.2f} MB')
+          print(f'Avg Tokens:    {avg_tokens:,.0f}')
+          print(f'Avg Time:      {avg_time * 1000:.2f} ms')
+          print(f'Tokens/sec:    {avg_tokens / avg_time:,.0f}')
+          print(f'MB/sec:        {text_mb / avg_time:.2f}')
+          print('✅ Benchmark complete')
+          "

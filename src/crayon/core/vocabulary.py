@@ -672,14 +672,31 @@ class CrayonVocab:
             self.current_profile_path = path
             
             # Load decoder mapping (companion JSON)
+            # Load decoder mapping (companion JSON)
             json_path = os.path.splitext(path)[0] + ".json"
             if os.path.exists(json_path):
                 try:
                     with open(json_path, "r", encoding="utf-8") as jf:
                         loaded = json.load(jf)
-                        if not isinstance(loaded, list):
-                            raise ValueError("Expected list in JSON")
-                        self._idx_to_str = loaded
+                        
+                        if isinstance(loaded, list):
+                            # V1 Legacy Format (List of strings)
+                            self._idx_to_str = loaded
+                        elif isinstance(loaded, dict) and "vocab" in loaded:
+                            # V2 Format (Dict with 'vocab' key: string -> int)
+                            vocab_map = loaded["vocab"]
+                            if not vocab_map:
+                                self._idx_to_str = []
+                            else:
+                                max_id = max(vocab_map.values())
+                                temp_list = [""] * (max_id + 1)
+                                for token, tid in vocab_map.items():
+                                    if 0 <= tid <= max_id:
+                                        temp_list[tid] = token
+                                self._idx_to_str = temp_list
+                        else:
+                            raise ValueError("JSON must be a list or dict with 'vocab' key")
+                            
                 except Exception as e:
                     _logger.warning("Failed to load decoder JSON: %s", e)
                     self._idx_to_str = []
