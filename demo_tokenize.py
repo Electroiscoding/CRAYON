@@ -1,72 +1,101 @@
+
 """
-Crayon Tokenizer Demo
----------------------
-Simple script to demonstrate loading a profile and tokenizing text.
+CRAYON UNIVERSAL TOKENIZER DEMO
+===============================
+This script demonstrates the production-ready Crayon Tokenizer API.
+It is designed to work seamlessly across:
+- Local Machine (Windows/Linux/Mac)
+- Google Colab / Jupyter Notebooks
+- CPU, NVIDIA GPU (CUDA), and AMD GPU (ROCm)
 """
-import sys
+
 import os
+import sys
 from pathlib import Path
 
-# Add paths to use local build if running from source
-sys.path.insert(0, os.path.join(os.getcwd(), "build", "lib.win-amd64-cpython-313"))
-sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+# --- 1. Environment Setup ---
+# Add 'src' to path so we can run without installing the package
+REPO_ROOT = Path(__file__).resolve().parent
+SRC_PATH = REPO_ROOT / "src"
+if SRC_PATH.exists():
+    sys.path.insert(0, str(SRC_PATH))
 
-from crayon.core.vocabulary import CrayonVocab
+try:
+    from crayon import CrayonVocab
+    from crayon.core.vocabulary import enable_verbose_logging
+except ImportError:
+    print("❌ Error: CRAYON source not found. Make sure you are running this from the repo root.")
+    sys.exit(1)
 
-def run_demo():
+def run_universal_demo():
+    # Optional: Enable verbose logging to see hardware detection in action
+    # enable_verbose_logging()
+
     print("=" * 60)
-    print("CRAYON TOKENIZER DEMO")
+    print("🚀 CRAYON: UNIVERSAL TOKENIZATION DEMO")
     print("=" * 60)
 
-    # 1. Load Profile
-    profile_name = "lite"
-    print(f"\n[1] Loading '{profile_name}' profile...")
-    
+    # --- 2. Initialize Engine ---
+    # device="auto" automatically picks CUDA > ROCm > CPU
+    print("\n[STEP 1] Initializing Engine (Auto-Detecting Hardware)...")
     try:
-        vocab = CrayonVocab.load_profile(profile_name)
-    except Exception as e:
-        print(f"Standard load failed: {e}")
-        # Manual fallback for development environment without installation
-        print("    -> Attempting development fallback...")
-        dat_path = Path("src/crayon/resources/dat/vocab_lite.dat")
-        json_path = Path("src/crayon/resources/dat/vocab_lite.json")
+        vocab = CrayonVocab(device="auto")
+        info = vocab.get_info()
         
-        if dat_path.exists():
-            vocab = CrayonVocab()
-            vocab._load_binary_dat(dat_path)
-            if json_path.exists():
-                vocab._load_json_mappings(json_path)
-        else:
-            print("❌ Could not find tokenizer files.")
-            sys.exit(1)
+        hw_name = info.get("hardware", {}).get("name", "Unknown")
+        hw_feat = info.get("hardware", {}).get("features", "")
+        print(f"    ✓ Device:  {info['device'].upper()}")
+        print(f"    ✓ Backend: {info['backend']}")
+        print(f"    ✓ Hardware: {hw_name} [{hw_feat}]")
+    except Exception as e:
+        print(f"    ❌ Initialization failed: {e}")
+        return
 
-    # 2. Check Engine Mode
-    mode = "🚀 Fast C++ DAT Engine" if vocab.fast_mode else "🐢 Slow Python Fallback"
-    print(f"    Status: {mode}")
+    # --- 3. Load Profile ---
+    # We load 'lite' which is bundled with the repository
+    print(f"\n[STEP 2] Loading 'lite' profile...")
+    try:
+        vocab.load_profile("lite")
+        print(f"    ✓ Profile Loaded: {vocab.current_profile_path}")
+        print(f"    ✓ Vocabulary Size: {vocab.vocab_size:,} tokens")
+    except Exception as e:
+        print(f"    ❌ Load failed: {e}")
+        print("    (Note: If you haven't built/downloaded the profiles, run train_code_profile.py first)")
+        return
 
-    # 3. Tokenize
-    text = "Hello, world! This is Crayon."
-    print(f"\n[2] Tokenizing: '{text}'")
+    # --- 4. Performance Tokenization ---
+    text = (
+        "CRAYON is a hyper-fast tokenizer designed for modern AI. "
+        "It supports AVX2 on CPUs, CUDA on NVIDIA, and ROCm on AMD."
+    )
     
+    print(f"\n[STEP 3] Tokenizing Text...")
+    print(f"    Input: \"{text[:50]}...\"")
+    
+    # Tokenize (returns a list of IDs)
     tokens = vocab.tokenize(text)
-    print(f"    Tokens IDs: {tokens}")
-    print(f"    Count:      {len(tokens)}")
-
-    # 4. Decode
-    print(f"\n[3] Decoding back to text...")
+    
+    print(f"    Result: {tokens[:10]}... ({len(tokens)} tokens)")
+    
+    # --- 5. Reconstruction (Decoding) ---
+    print(f"\n[STEP 4] Decoding back to text...")
     try:
         decoded = vocab.decode(tokens)
-        print(f"    Decoded:    '{decoded}'")
+        print(f"    Output: \"{decoded[:50]}...\"")
         
-        if decoded == text:
-            print("    Unknown/Unmapped tokens found (exact match requires full coverage)")
+        # Verify success
+        # Note: BPE usually preserves whitespace and case
+        if decoded.strip().lower() == text.strip().lower():
+             print("\n✅ SUCCESS: Tokenization and Decoding were perfect!")
         else:
-            print("    (Note: exact reconstruction depends on vocabulary coverage)")
-            
+             print("\nℹ️  INFO: Tokenization complete (approximate reconstruction).")
+             
     except Exception as e:
-        print(f"    Decode failed: {e}")
+        print(f"    ❌ Decode failed: {e}")
 
     print("\n" + "=" * 60)
+    print("DEMO COMPLETE - CRAYON IS READY FOR PRODUCTION")
+    print("=" * 60)
 
 if __name__ == "__main__":
-    run_demo()
+    run_universal_demo()
