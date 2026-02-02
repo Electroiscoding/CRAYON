@@ -14,13 +14,12 @@
 #include <cstring>
 
 // --- SIMD INTRINSICS & CPU DETECTION ---
-#ifdef _MSC_VER
-    #include <intrin.h>
-#else
-    #include <cpuid.h>
-#endif
-
 #if defined(__x86_64__) || defined(_M_X64)
+    #ifdef _MSC_VER
+        #include <intrin.h>
+    #else
+        #include <cpuid.h>
+    #endif
     #include <immintrin.h> // AVX2
     #define USE_AVX2 1
 #else

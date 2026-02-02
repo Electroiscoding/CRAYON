@@ -33,7 +33,11 @@ jobs:
           # We explicitly force x86_64 builds to avoid failures on ARM64 runners.
           CIBW_ARCHS_LINUX: x86_64
           CIBW_ARCHS_WINDOWS: AMD64
-          CIBW_ARCHS_MACOS: x86_64
+          CIBW_ARCHS_MACOS: x86_64 arm64
+          
+          # 3. Environment
+          # Universal wheels should be CPU-only (CUDA/ROCm are for custom local builds)
+          CIBW_ENVIRONMENT: CRAYON_FORCE_CPU=1
 
           # 3. Quality Assurance
           # Run the test suite against the installed wheel to verify the C-extension

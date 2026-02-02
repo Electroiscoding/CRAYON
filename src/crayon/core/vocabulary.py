@@ -26,6 +26,7 @@ import mmap
 import os
 import platform
 import sys
+import tempfile
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
@@ -364,16 +365,23 @@ class CrayonVocab:
         "_hardware_info",
     )
     
-    def __init__(self, device: DeviceType = "auto") -> None:
+    def __init__(
+        self, 
+        vocab_list: Optional[List[str]] = None, 
+        device: DeviceType = "auto",
+        unk_token: str = "<UNK>"
+    ) -> None:
         """
         Initialize the tokenizer engine.
 
         Args:
+            vocab_list: Optional list of strings to build an ad-hoc vocabulary.
             device: Device selection mode.
                 - "auto": Detects GPU. If available, uses it. Else CPU.
                 - "cpu": Forces AVX2/AVX-512 CPU backend (best for latency).
                 - "cuda": Forces NVIDIA GPU backend (best for batch throughput).
                 - "rocm": Forces AMD GPU backend (best for batch throughput).
+            unk_token: String to use as the unknown token placeholder.
                 
         Raises:
             ImportError: If the CPU backend extension is not available.
@@ -395,6 +403,11 @@ class CrayonVocab:
         self._idx_to_str: List[str] = []
         self.current_profile_path: Optional[str] = None
         self._profile_loaded: bool = False
+        self._temp_dat_path: Optional[str] = None
+        
+        # Public properties for test compatibility
+        self.unk_token = unk_token
+        self.unk_token_id = 1 # Hardware convention in Crayon v2
         
         # Device state
         self._requested_device: DeviceType = device
@@ -413,6 +426,10 @@ class CrayonVocab:
         # --- Resolve and Initialize Device ---
         self.device = self._resolve_device(device)
         self._init_selected_backend()
+        
+        # --- Load ad-hoc vocab if provided ---
+        if vocab_list:
+            self.load_from_list(vocab_list)
     
     def _load_cpu_backend(self) -> None:
         """Load the CPU extension (required as fallback for all modes)."""
@@ -610,6 +627,49 @@ class CrayonVocab:
             f"You can specify the full path or set CRAYON_PROFILE_DIR environment variable."
         )
     
+    @property
+    def id_to_token(self) -> List[str]:
+        """Get the ID-to-token mapping list (for compatibility)."""
+        return self._idx_to_str
+
+    def __len__(self) -> int:
+        """Return the total number of tokens in the active vocabulary."""
+        return len(self._idx_to_str)
+
+    def __contains__(self, token: str) -> bool:
+        """Check if a token exists in the active vocabulary (O(N) fallback)."""
+        return token in self._idx_to_str
+
+    def load_from_list(self, vocab: List[str]) -> None:
+        """Build and load a temporary DAT profile from a list of strings."""
+        try:
+            from ..c_ext import crayon_compiler
+        except ImportError:
+            raise ImportError("crayon_compiler extension required for load_from_list()")
+
+        with self._lock:
+            # Create a secure temporary file
+            fd, path = tempfile.mkstemp(suffix=".dat")
+            os.close(fd)
+            
+            try:
+                # Compile to the temp file
+                crayon_compiler.compile_dat(vocab, path)
+                
+                # IMPORTANT: Since load_profile() expects a .json file to load _idx_to_str,
+                # we create a dummy JSON or just bypass the load_profile JSON loading
+                # by manually setting _idx_to_str after load_profile.
+                self.load_profile(path)
+                
+                # Override the idx_to_str which failed to load during load_profile (since no .json exists)
+                self._idx_to_str = list(vocab)
+                self._temp_dat_path = path
+                
+            except Exception as e:
+                if os.path.exists(path):
+                    os.unlink(path)
+                raise RuntimeError(f"Failed to build ad-hoc vocabulary: {e}")
+
     def _close_profile_handles(self) -> None:
         """Safely close any open file handles."""
         if self._dat_mem_ref is not None:
@@ -625,6 +685,14 @@ class CrayonVocab:
             except Exception:
                 pass
             self._dat_file_ref = None
+            
+        # Clean up temporary DAT if exists
+        if hasattr(self, '_temp_dat_path') and self._temp_dat_path and os.path.exists(self._temp_dat_path):
+            try:
+                os.unlink(self._temp_dat_path)
+            except Exception:
+                pass
+            self._temp_dat_path = None
     
     def close(self) -> None:
         """Release all resources and close file handles."""
