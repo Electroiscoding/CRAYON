@@ -52,6 +52,7 @@ jobs:
           python -c "
           from crayon import CrayonVocab
           v = CrayonVocab(device='cpu')
+          v.load_profile('lite') # LOAD PROFILE FIRST
           result = v.tokenize('Hello Cloud! Testing CRAYON on GitHub Actions.')
           print(f'✅ Tokenized to {len(result)} tokens')
           print(f'   Tokens: {result[:10]}...')
@@ -91,7 +92,7 @@ jobs:
       - name: Install Python & Dependencies
         run: |
           apt-get update
-          apt-get install -y python3 python3-pip python3-venv git
+          apt-get install -y python3 python3-pip python3-venv python3-dev git
           python3 -m pip install --upgrade pip setuptools wheel
           
       - name: Install PyTorch (CUDA)
@@ -135,7 +136,7 @@ jobs:
       - name: Install Python & Dependencies
         run: |
           apt-get update
-          apt-get install -y python3 python3-pip python3-venv git
+          apt-get install -y python3 python3-pip python3-venv python3-dev git
           python3 -m pip install --upgrade pip setuptools wheel
           
       - name: Verify ROCm Installation

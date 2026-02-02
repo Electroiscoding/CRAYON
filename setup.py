@@ -51,7 +51,12 @@ FORCE_CPU = os.environ.get("CRAYON_FORCE_CPU", "0") == "1"
 try:
     import torch
     from torch.utils.cpp_extension import CUDAExtension, BuildExtension, CUDA_HOME
-    TORCH_CUDA_AVAILABLE = torch.cuda.is_available() and (CUDA_HOME is not None)
+    
+    # FOR PRODUCTION/CI: Build if CUDA_HOME exists and CRAYON_FORCE_CUDA is set,
+    # even if no GPU is found on the build machine.
+    FORCE_CUDA = os.environ.get("CRAYON_FORCE_CUDA", "0") == "1"
+    TORCH_CUDA_AVAILABLE = (torch.cuda.is_available() or FORCE_CUDA) and (CUDA_HOME is not None)
+    
 except ImportError:
     TORCH_CUDA_AVAILABLE = False
     CUDAExtension = None
@@ -59,12 +64,13 @@ except ImportError:
     CUDA_HOME = None
 
 # Detect ROCm
+FORCE_ROCM = os.environ.get("CRAYON_FORCE_ROCM", "0") == "1"
 ROCM_HOME = os.environ.get("ROCM_HOME", "/opt/rocm")
 HIPCC_PATH = os.path.join(ROCM_HOME, "bin", "hipcc")
-HAS_ROCM = os.path.exists(HIPCC_PATH)
+HAS_ROCM = (os.path.exists(HIPCC_PATH) or FORCE_ROCM)
 
 if HAS_ROCM:
-    log(f"ROCm detected at {ROCM_HOME}")
+    log(f"ROCm detected at {ROCM_HOME} (Forced={FORCE_ROCM})")
     log(f"hipcc found at {HIPCC_PATH}")
 else:
     log("ROCm not detected - skipping AMD backend")
