@@ -26,6 +26,25 @@
     #define USE_AVX2 0
 #endif
 
+// Runtime CPU Feature Check
+static bool supports_avx2() {
+#if USE_AVX2
+    #ifdef _MSC_VER
+        int cpu_info[4];
+        __cpuid(cpu_info, 7);
+        return (cpu_info[1] & 0x20) != 0;
+    #else
+        unsigned int eax, ebx, ecx, edx;
+        if (__get_cpuid(7, &eax, &ebx, &ecx, &edx)) {
+            return (ebx & (1 << 5)) != 0;
+        }
+        return false;
+    #endif
+#else
+    return false;
+#endif
+}
+
 // --- INTERNAL CONTEXT ---
 struct DATContext {
     const int32_t* base;
@@ -72,12 +91,12 @@ static PyObject* get_hardware_info(PyObject* self, PyObject* args) {
     if (cpu_name.empty()) cpu_name = "Unknown CPU";
 
     std::string features = "Standard";
-    #if USE_AVX2
+    if (supports_avx2()) {
         features = "AVX2";
-        #if defined(__AVX512F__)
-            features = "AVX-512 (Nitro)";
-        #endif
-    #endif
+    }
+#if defined(__AVX512F__)
+    features = "AVX-512 (Nitro)";
+#endif
 
     std::string info = cpu_name + " [" + features + "]";
     return PyUnicode_FromString(info.c_str());
@@ -119,9 +138,12 @@ static PyObject* tokenize(PyObject* self, PyObject* args) {
         int best_token = -1;
         int best_len = 0;
         
+        // Cache runtime capability check
+        static bool avx2_supported = supports_avx2();
+        
         // OPTIMIZATION: Check for pure ASCII block if enough text remains
         bool fast_mode = false;
-        if (USE_AVX2 && (len - pos) >= 32) {
+        if (USE_AVX2 && avx2_supported && (len - pos) >= 32) {
             if (is_ascii_32_avx2(text + pos)) {
                 fast_mode = true;
             }

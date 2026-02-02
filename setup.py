@@ -200,7 +200,7 @@ class CrayonBuildExt(build_ext):
 ext_modules = []
 
 # --- 1. CPU Extension (Always) ---
-cpu_args = ["/O2", "/arch:AVX2"] if sys.platform == "win32" else ["-O3", "-march=native", "-mavx2"]
+cpu_args = ["/O2", "/arch:AVX2"] if sys.platform == "win32" else ["-O3", "-mavx2"]
 if sys.platform != "win32":
     cpu_args.append("-fPIC")
     cpu_args.append("-std=c++17")
