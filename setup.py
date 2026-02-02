@@ -65,9 +65,9 @@ except ImportError:
 
 # Detect ROCm
 FORCE_ROCM = os.environ.get("CRAYON_FORCE_ROCM", "0") == "1"
-ROCM_HOME = os.environ.get("ROCM_HOME", "/opt/rocm")
-HIPCC_PATH = os.path.join(ROCM_HOME, "bin", "hipcc")
-HAS_ROCM = (os.path.exists(HIPCC_PATH) or FORCE_ROCM)
+ROCM_HOME = os.environ.get("ROCM_HOME", "/opt/rocm" if sys.platform != "win32" else "")
+HIPCC_PATH = os.path.join(ROCM_HOME, "bin", "hipcc") if ROCM_HOME else ""
+HAS_ROCM = (os.path.exists(HIPCC_PATH) if HIPCC_PATH else False) or FORCE_ROCM
 
 if HAS_ROCM:
     log(f"ROCm detected at {ROCM_HOME} (Forced={FORCE_ROCM})")

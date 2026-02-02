@@ -197,7 +197,7 @@ jobs:
           
       - name: Run Basic Test
         run: |
-          python -c "from crayon import CrayonVocab; v = CrayonVocab(device='cpu'); print(v.tokenize('Hello Windows!'))"
+          python -c "from crayon import CrayonVocab; v = CrayonVocab(device='cpu'); v.load_profile('lite'); print(v.tokenize('Hello Windows!'))"
 
   # ==========================================================================
   # JOB 5: BENCHMARK (CPU Performance Validation)
@@ -261,6 +261,7 @@ jobs:
           from crayon import CrayonVocab
           
           v = CrayonVocab(device='cpu')
+          v.load_profile('lite')
           
           # Generate test text
           text = 'The quick brown fox jumps over the lazy dog. ' * 10000
