@@ -1,2 +1,2 @@
 streamlit
-crayon
+xerv-crayon>=4.3.0
