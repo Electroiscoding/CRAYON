@@ -1,59 +1,57 @@
-
 import streamlit as st
 from crayon import CrayonVocab
+import time
 
-@st.cache_resource
-def load_crayon_vocab_cached():
-    vocab = CrayonVocab(device="auto")
-    vocab.load_profile("lite")
-    return vocab
+st.set_page_config(page_title="CRAYON Tokenizer Demo", layout="wide")
 
-vocab = load_crayon_vocab_cached()
+st.title("🖍️ CRAYON Tokenizer Demo")
+st.markdown("Interactive tokenization with CRAYON—the hyper-fast specialized tokenizer.")
 
-st.set_page_config(page_title='CRAYON Tokenizer Demo', layout='wide')
+# Initialize session state
+if "vocab" not in st.session_state:
+    with st.spinner("Loading vocabulary profile..."):
+        st.session_state.vocab = CrayonVocab(device="cpu")  # Use CPU for cloud compatibility
+        st.session_state.vocab.load_profile("lite")
+    st.success("✓ Profile loaded!")
 
-st.title('CRAYON Tokenizer Demonstration')
+vocab = st.session_state.vocab
 
-default_text = "CRAYON is a hyper-fast tokenizer designed for modern AI. It offers unparalleled speed and efficiency in processing large volumes of text data."
-user_text = st.text_area('Enter text here:', default_text, height=200)
+# User input
+st.subheader("Input Text")
+text_input = st.text_area(
+    "Enter text to tokenize:",
+    value="Hello, CRAYON! This is a production-grade tokenizer.",
+    height=100
+)
 
-if user_text:
-    tokens_ids = vocab.tokenize(user_text)
-    decoded_tokens = [vocab.decode([token_id]) for token_id in tokens_ids]
-
-    word_count = len([word for word in user_text.split() if word.strip()])
-    token_count = len(tokens_ids)
-
-    colors = ["rgba(173, 216, 230, 0.4)", "rgba(144, 238, 144, 0.4)", "rgba(255, 255, 153, 0.4)", "rgba(255, 192, 203, 0.4)"]
-    highlighted_tokens_html = []
-    for i, token in enumerate(decoded_tokens):
-        color = colors[i % len(colors)]
-        highlighted_tokens_html.append(f"<span style='background-color: {color}; padding: 2px; margin: 0 1px;'>{token}</span>")
-
-    display_tokens_html = "".join(highlighted_tokens_html)
-
-    st.subheader('Tokenized Text')
-    st.markdown(f"<div style='border: 1px solid #ccc; padding: 10px; border-radius: 5px;'>{display_tokens_html}</div>", unsafe_allow_html=True)
-
-    st.subheader('Word Count')
-    st.write(word_count)
-
-    st.subheader('Token Count')
-    st.write(token_count)
-
-    with st.expander("Show Detailed Token Information (IDs and Decoded Parts)"):
-        st.write("--- ")
-        st.markdown("### Token IDs:")
-        st.code(str(tokens_ids))
-        st.markdown("### Decoded Token Parts:")
-        for i, token in enumerate(decoded_tokens):
-            st.markdown(f"- ID: {tokens_ids[i]}, Part: `{token}`")
-        st.write("--- ")
-
-else:
-    st.subheader('Tokenized Text')
-    st.write("Please enter some text to tokenize.")
-    st.subheader('Word Count')
-    st.write("0")
-    st.subheader('Token Count')
-    st.write("0")
+if text_input:
+    # Tokenize
+    start = time.perf_counter()
+    tokens = vocab.tokenize(text_input)
+    elapsed = (time.perf_counter() - start) * 1000
+    
+    # Decode
+    decoded = vocab.decode(tokens)
+    
+    # Display results
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Tokens")
+        st.code(str(tokens), language="python")
+    
+    with col2:
+        st.subheader("Statistics")
+        st.metric("Token Count", len(tokens))
+        st.metric("Processing Time", f"{elapsed:.3f}ms")
+    
+    st.subheader("Decoded Output")
+    st.write(decoded)
+    
+    # Token breakdown
+    with st.expander("📋 Token Breakdown"):
+        st.write(f"{'ID':<8} | {'Substring':<20}")
+        st.write("-" * 30)
+        for tid in tokens:
+            substring = vocab.decode([tid])
+            st.write(f"{tid:<8} | '{substring}'")
