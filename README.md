@@ -2,7 +2,7 @@
   <img src="https://em-content.zobj.net/source/microsoft-teams/363/crayon_1f58d-fe0f.png" width="120" alt="Crayon Logo"/>
 </p>
 
-<h1 align="center">🖍️ XERV Crayon v4.1.9</h1>
+<h1 align="center">🖍️ XERV Crayon v5.0.1</h1>
 
 <p align="center">
   <strong>The Omni-Backend Tokenizer for Specialized AI</strong>
@@ -208,9 +208,15 @@ print(f"Tokens: {tokens}")
 ## 📦 Installation
 
 ```bash
-git clone https://github.com/Xerv-AI/crayon.git
-cd crayon
-pip install -e .
+pip install xerv-crayon
+```
+
+### Google Colab / Linux Installation
+Since Crayon includes high-performance C++ extensions, it will compile natively on your environment:
+
+```python
+# Run this in a Colab cell
+!pip install xerv-crayon
 ```
 
 ### Build the Extensions
@@ -253,6 +259,7 @@ Crayon now uses a **"God Tier"** multi-backend implementation combining:
 
 | Profile | Size | Optimized For | Sources |
 |:--------|:-----|:--------------|:--------|
+| **`standard`** | 57k | **General English (V5 Default)** | Lite + Top 10k subwords |
 | **`lite`** | 50k | Speed & Mobile | WikiText, RainDrop |
 | **`science`** | 250k | Reasoning (LaTeX, Quantum, Grad Math) | GRAD, Physics-700 |
 | **`code`** | 250k | Syntax (Python, Rust, C++, JS) | CodeParrot, The Stack |
@@ -268,14 +275,23 @@ vocab = CrayonVocab.load_profile("multilingual")
 
 ## ☁️ Verify on Google Colab
 
-Want to test the **CUDA Backend** for free? 
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Xerv-AI/crayon/blob/main/colab_benchmark.ipynb)
+### ✅ Quick Verify Snippet
 
-1. Open the notebook.
-2. Change Runtime type to **T4 GPU**.
-3. Run the cells to verify `crayon_cuda` compiles and smashes tokens at >100M/sec.
+```python
+from crayon import CrayonVocab
 
+# Initialize with Auto-Backend (AVX2/CUDA/ROCm)
+tokenizer = CrayonVocab(device="auto")
+
+# 1. Test Standard subword-heavy profile
+tokenizer.load_profile("standard")
+print(tokenizer.tokenize("that is a test for the standard profile"))
+
+# 2. Test Code specialized profile
+tokenizer.load_profile("code")
+print(tokenizer.tokenize("def fast_inverse_sqrt(x):"))
+```
 ---
 
 ## 🧪 Testing & Verification
