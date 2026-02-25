@@ -134,7 +134,7 @@ static PyObject* tokenize(PyObject* self, PyObject* args) {
 
     // --- HOT LOOP ---
     while (pos < len) {
-        int32_t node = 1; // Root (Compiler places root at index 1)
+        int32_t node = 0; // Root (Compiler places root at index 0)
         int best_token = -1;
         int best_len = 0;
         

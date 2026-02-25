@@ -103,7 +103,7 @@ public:
         if (new_size <= max_size) return;
         
         base.resize(new_size, 0);
-        check.resize(new_size, 0);  // 0 means empty/unused
+        check.resize(new_size, -1);  // -1 means empty/unused
         values.resize(new_size, -1);  // -1 means not a leaf
         max_size = new_size;
     }
@@ -153,7 +153,7 @@ public:
                 }
                 
                 // Collision detected - slot already occupied
-                if (check[idx] != 0) {
+                if (check[idx] != -1) {
                     collision = true;
                     break;
                 }
@@ -222,7 +222,7 @@ public:
     void save(const std::string& filename) {
         // Trim arrays to actual used size
         int32_t real_size = nodes_used;
-        while (real_size > 0 && check[real_size - 1] == 0) {
+        while (real_size > 0 && check[real_size - 1] == -1) {
             real_size--;
         }
         real_size++;  // Include at least one extra for safety
@@ -272,12 +272,12 @@ public:
         }
         
         // 2. Build DAT from trie
-        // Root node is always at index 1 in standard DAT layout
-        check[1] = 0;  // Root has no parent (special marker)
-        nodes_used = 2;  // At least indices 0 and 1 are used
+        // Root node is always at index 0 in standard DAT layout
+        check[0] = -1;  // Root has no parent (special marker, typically 0 or -1, but let's use -1 to match python Builder)
+        nodes_used = 1;  // At least index 0 is used
         
         std::cout << "  [C++ Compiler] Converting trie to DAT..." << std::endl;
-        build_dat(root, 1);
+        build_dat(root, 0);
         
         // 3. Save to disk
         save(out_file);
