@@ -4,7 +4,7 @@ import time
 
 st.set_page_config(page_title="CRAYON Tokenizer Demo", layout="wide")
 
-st.title("🖍️ CRAYON Tokenizer Demo")
+st.title("🖍️ CRAYON v5.1.0 Tokenizer Demo")
 st.markdown("Interactive tokenization with CRAYON—the hyper-fast specialized tokenizer.")
 
 # Initialize session state

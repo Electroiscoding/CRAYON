@@ -337,7 +337,7 @@ class CrayonVocab:
         
         >>> # Force CPU for latency-sensitive workloads
         >>> vocab = CrayonVocab(device="cpu")
-        >>> vocab.load_profile("code")
+        >>> vocab.load_profile("standard")
         >>> tokens = vocab.tokenize("def forward(self, x):")
         
         >>> # Batch processing on GPU
@@ -346,8 +346,10 @@ class CrayonVocab:
         >>> batch_tokens = vocab.tokenize(["doc1", "doc2", "doc3"])
         
         >>> # Context manager for temporary profile switch
-        >>> with vocab.using_profile("science"):
+        >>> vocab.load_profile("lite")
+        >>> with vocab.using_profile("standard"):
         ...     tokens = vocab.tokenize("E=mc²")
+        >>> # Back to "lite" profile automatically
     """
     
     __slots__ = (
@@ -852,7 +854,7 @@ class CrayonVocab:
             
         Example:
             >>> vocab.load_profile("lite")
-            >>> with vocab.using_profile("code"):
+            >>> with vocab.using_profile("standard"):
             ...     tokens = vocab.tokenize(source_code)
             >>> # Back to "lite" profile automatically
         """

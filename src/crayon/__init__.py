@@ -31,11 +31,10 @@ Device Selection:
 
 Profile Management:
     >>> vocab.load_profile("lite")      # General purpose
-    >>> vocab.load_profile("code")      # Programming languages
-    >>> vocab.load_profile("science")   # Scientific text
+    >>> vocab.load_profile("standard")  # Larger general purpose
     >>> 
     >>> # Context manager for temporary switch
-    >>> with vocab.using_profile("code"):
+    >>> with vocab.using_profile("standard"):
     ...     tokens = vocab.tokenize(source_code)
 
 Environment Variables:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xerv-crayon"
-version = "5.0.1"
+version = "5.1.0"
 description = "Omni-Backend Tokenizer - CPU (AVX2/512), CUDA (NVIDIA), ROCm (AMD) with automatic hardware detection"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -92,8 +92,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "crayon" = [
-    "resources/dat/*.dat",
-    "resources/dat/*.json",
+    "resources/dat/vocab_lite.dat",
+    "resources/dat/vocab_lite.json",
+    "resources/dat/vocab_standard.dat",
+    "resources/dat/vocab_standard.json",
     "resources/*.txt",
     "resources/*.csv",
     "c_ext/*.h",

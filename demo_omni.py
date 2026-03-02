@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-XERV CRAYON V4.2.0 - OMNI-BACKEND DEMONSTRATION
+XERV CRAYON V5.1.0 - OMNI-BACKEND DEMONSTRATION
 ================================================
 
 This script demonstrates the "Smashing Experience" of Crayon's Omni-Backend.
@@ -126,7 +126,7 @@ def demo_profile_hotswap(vocab):
     PROFILE HOT-SWAP: The Context Manager
     
     Demonstrates switching vocabulary profiles on-the-fly.
-    Useful when processing mixed content (code, science, general text).
+    Useful when processing mixed content.
     """
     print("\n")
     print("3️⃣  CONTEXT SWITCHING (Profile Hot-Swap)")
@@ -141,18 +141,11 @@ def demo_profile_hotswap(vocab):
     tokens_lite = vocab.tokenize(code_snippet)
     print(f"   └─ Result: {len(tokens_lite)} tokens")
     
-    # Try code profile
-    try:
-        print("\n   [CODE Profile] Switching context...")
-        with vocab.using_profile("code"):
-            tokens_code = vocab.tokenize(code_snippet)
-            print(f"   └─ Result: {len(tokens_code)} tokens")
-            
-            if len(tokens_code) < len(tokens_lite):
-                improvement = ((len(tokens_lite) - len(tokens_code)) / len(tokens_lite)) * 100
-                print(f"   ✨ {improvement:.1f}% better compression with specialized profile!")
-    except FileNotFoundError:
-        print("   ⚠️ 'code' profile not available - using lite only")
+    # Switch to standard profile
+    print("\n   [STANDARD Profile] Switching context...")
+    with vocab.using_profile("standard"):
+        tokens_std = vocab.tokenize(code_snippet)
+        print(f"   └─ Result: {len(tokens_std)} tokens")
     
     print("\n   🔄 Automatically reverted to 'lite' profile")
     

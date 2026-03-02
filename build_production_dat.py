@@ -14,6 +14,7 @@ import json
 import time
 import logging
 from pathlib import Path
+from typing import Dict, List
 
 # Suppress verbose logging
 logging.disable(logging.WARNING)
@@ -22,99 +23,102 @@ logging.disable(logging.WARNING)
 sys.path.insert(0, os.path.join(os.getcwd(), "build", "lib.win-amd64-cpython-313"))
 sys.path.insert(0, os.path.join(os.getcwd(), "src"))
 
-from crayon.c_ext.dat_builder import DATBuilder
-
 # Storage locations
 PACKAGE_DAT_DIR = Path("src/crayon/resources/dat")
 USER_CACHE_DIR = Path.home() / ".cache" / "xerv" / "crayon" / "profiles"
 
-# Vocabulary profiles to build
-VOCAB_PROFILES = [
-    {
-        "name": "science",
-        "source": "trained_vocab_science.json",
-        "description": "High-Precision Math, Physics & LaTeX Support"
-    },
-    {
-        "name": "code",
-        "source": "trained_vocab_code.json",
-        "description": "Python, Rust, C++, JavaScript Syntax"
-    },
-    {
-        "name": "multilingual",
-        "source": "trained_vocab_multilingual.json",
-        "description": "European Languages, Chinese, Hindi"
-    },
-    {
-        "name": "arts_commerce",
-        "source": "trained_vocab_arts_commerce.json",
-        "description": "Legal, Financial, Literature"
-    },
-    {
-        "name": "lite",
-        "source": "trained_vocab_lite.json",
-        "description": "General English, 50k tokens, Speed-optimized"
-    },
-]
 
-def load_vocab(source_path: str) -> list:
-    """Load vocabulary from JSON file."""
-    with open(source_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
-    if isinstance(data, list):
-        return data
-    elif isinstance(data, dict):
-        return [k for k, v in sorted(data.items(), key=lambda x: x[1])]
-    else:
-        raise ValueError(f"Unknown vocab format in {source_path}")
+def _tiktoken_vocab(encoding_name: str, limit: int) -> List[str]:
+    import tiktoken
 
-def build_profile(profile: dict, output_dirs: list) -> dict:
-    """Build a single profile and save to all output directories."""
-    name = profile["name"]
-    source = profile["source"]
-    
-    if not os.path.exists(source):
-        return {"name": name, "status": "SKIP", "reason": f"Source not found: {source}"}
-    
+    enc = tiktoken.get_encoding(encoding_name)
+    n_vocab = int(getattr(enc, "n_vocab", 0))
+    if n_vocab <= 0:
+        raise RuntimeError(f"tiktoken encoding {encoding_name!r} has invalid n_vocab={n_vocab}")
+
+    out: List[str] = []
+    for i in range(n_vocab):
+        if len(out) >= limit:
+            break
+        try:
+            out.append(enc.decode([i]))
+        except Exception:
+            # Some encodings contain special/un-decodable token IDs.
+            # We skip them and continue until we hit the requested limit.
+            continue
+
+    if len(out) != limit:
+        raise RuntimeError(
+            f"Failed to collect {limit} decodable tokens from {encoding_name!r}. "
+            f"Got {len(out)} (n_vocab={n_vocab})."
+        )
+    return out
+
+
+def _build_lite_vocab() -> List[str]:
+    return _tiktoken_vocab("p50k_base", 50000)
+
+
+def _build_standard_vocab() -> List[str]:
+    lite = _build_lite_vocab()
+    existing = set(lite)
+
+    # Try to add up to 200k tokens from o200k_base, skipping undecodable and duplicates.
+    # If that results in <250k total, that's allowed by user request.
+    extra = _tiktoken_vocab("o200k_base", 200000)
+    merged: List[str] = list(lite)
+    for tok in extra:
+        if tok in existing:
+            continue
+        merged.append(tok)
+        existing.add(tok)
+        if len(merged) >= 250000:
+            break
+
+    return merged
+
+
+def _compile_dat(vocab: List[str], dat_path: Path) -> Dict:
     try:
-        # Load vocabulary
-        vocab = load_vocab(source)
-        vocab_size = len(vocab)
-        
-        # Build DAT
-        builder = DATBuilder()
-        start = time.perf_counter()
-        builder.build(vocab)
-        build_time = time.perf_counter() - start
-        
-        # Save to all output directories
-        saved_paths = []
-        for output_dir in output_dirs:
-            output_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Save DAT file
-            dat_path = output_dir / f"vocab_{name}.dat"
-            builder.save(str(dat_path))
-            saved_paths.append(str(dat_path))
-            
-            # Also save JSON for decode() support
-            json_path = output_dir / f"vocab_{name}.json"
-            with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(vocab, f, ensure_ascii=False)
-        
-        return {
-            "name": name,
-            "status": "OK",
-            "vocab_size": vocab_size,
-            "dat_nodes": builder.size,
-            "dat_size_kb": os.path.getsize(saved_paths[0]) / 1024,
-            "build_time_s": build_time,
-            "paths": saved_paths
-        }
-        
+        from crayon.c_ext import crayon_compiler
     except Exception as e:
-        return {"name": name, "status": "FAIL", "reason": str(e)}
+        raise RuntimeError(
+            "C/C++ DAT compiler extension 'crayon_compiler' is required for build_production_dat.py. "
+            "Build/install the package with extensions enabled, then re-run. "
+            f"Original error: {e}"
+        )
+
+    return crayon_compiler.compile_dat(vocab, str(dat_path))
+
+
+def build_profile(name: str, vocab: List[str], output_dirs: List[Path]) -> Dict:
+    start = time.perf_counter()
+
+    saved_paths = []
+    compile_stats: Dict = {}
+    for output_dir in output_dirs:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        json_path = output_dir / f"vocab_{name}.json"
+        dat_path = output_dir / f"vocab_{name}.dat"
+
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(vocab, f, ensure_ascii=False)
+
+        compile_stats = _compile_dat(vocab, dat_path)
+        saved_paths.append(str(dat_path))
+
+    build_time = time.perf_counter() - start
+    dat_size_kb = os.path.getsize(saved_paths[0]) / 1024
+    return {
+        "name": name,
+        "status": "OK",
+        "vocab_size": len(vocab),
+        "dat_size_kb": dat_size_kb,
+        "build_time_s": build_time,
+        "compile_stats": compile_stats,
+        "paths": saved_paths,
+    }
 
 def main():
     print("=" * 80)
@@ -133,26 +137,30 @@ def main():
     print("-" * 80)
     results = []
     
-    for profile in VOCAB_PROFILES:
-        name = profile["name"]
-        print(f"[BUILD] {name:<20} ({profile['description'][:40]})", end=" ", flush=True)
-        
-        result = build_profile(profile, output_dirs)
-        results.append(result)
-        
-        if result["status"] == "OK":
-            print(f"✓ {result['vocab_size']:,} tokens → {result['dat_nodes']:,} nodes | {result['build_time_s']:.1f}s")
-        elif result["status"] == "SKIP":
-            print(f"⊘ SKIPPED: {result['reason']}")
-        else:
-            print(f"✗ FAILED: {result['reason']}")
+    profiles = [
+        ("lite", _build_lite_vocab),
+        ("standard", _build_standard_vocab),
+    ]
+
+    for name, fn in profiles:
+        print(f"[BUILD] {name:<20}", end=" ", flush=True)
+        try:
+            vocab = fn()
+            result = build_profile(name, vocab, output_dirs)
+            results.append(result)
+            print(
+                f"✓ {result['vocab_size']:,} tokens | {result['dat_size_kb']:.1f} KB | {result['build_time_s']:.1f}s"
+            )
+        except Exception as e:
+            results.append({"name": name, "status": "FAIL", "reason": str(e)})
+            print(f"✗ FAILED: {e}")
     
     print("-" * 80)
     print()
     
     # Summary
     ok_count = sum(1 for r in results if r["status"] == "OK")
-    print(f"✅ Successfully built: {ok_count}/{len(VOCAB_PROFILES)} profiles")
+    print(f"✅ Successfully built: {ok_count}/{len(results)} profiles")
     print()
     
     # Show what was created
@@ -169,8 +177,8 @@ def main():
     print("=" * 80)
     print()
     print("📌 Next Steps:")
-    print("   1. Commit src/crayon/resources/dat/*.dat to git")
-    print("   2. Users can now use: CrayonVocab.load_profile('code')")
+    print("   1. Commit src/crayon/resources/dat/vocab_lite.* and vocab_standard.* to git")
+    print("   2. Users can now use: CrayonVocab.load_profile('lite'|'standard')")
     print()
 
 if __name__ == "__main__":

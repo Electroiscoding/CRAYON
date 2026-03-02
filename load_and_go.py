@@ -1,5 +1,5 @@
 """
-XERV Crayon - Load & Go Inference Mode Demo
+XERV Crayon v5.1.0 - Load & Go Inference Mode Demo
 
 This demonstrates the instant "inference only" workflow:
 1. LOAD: Load pre-trained vocabulary from file

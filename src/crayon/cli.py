@@ -17,7 +17,7 @@ def run_benchmark():
     parser.add_argument(
         '--profile', '-p',
         default='lite',
-        choices=['lite', 'code', 'science', 'multilingual', 'arts_commerce'],
+        choices=['lite', 'standard'],
         help='Vocabulary profile to use (default: lite)'
     )
     parser.add_argument(

@@ -19,8 +19,8 @@ print("-" * 70)
 try:
     from crayon.core.vocabulary import CrayonVocab
     
-    # Load the "Code" Cartridge (should work with existing trained_vocab_code.json)
-    vocab = CrayonVocab.load_profile("code")
+    vocab = CrayonVocab(device="auto")
+    vocab.load_profile("lite")
     
     # Tokenize specialized syntax
     code_snippet = "fn main() { println!(\"Hello, World!\"); }"
@@ -47,9 +47,10 @@ print()
 # Test 2: Load different profiles
 print("[TEST 2] Load Different Profiles")
 print("-" * 70)
-for profile_name in ["science", "multilingual"]:
+for profile_name in ["lite", "standard"]:
     try:
-        vocab = CrayonVocab.load_profile(profile_name)
+        vocab = CrayonVocab(device="auto")
+        vocab.load_profile(profile_name)
         print(f"✓ Loaded '{profile_name}' profile")
     except Exception as e:
         print(f"✗ Failed to load '{profile_name}': {e}")
