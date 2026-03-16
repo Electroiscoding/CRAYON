@@ -37,7 +37,16 @@ class TestCrayonExtensions(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         if hasattr(cls, 'mmap_obj'):
-            cls.mmap_obj.close()
+            # The C extension holds a reference to the mmap object
+            # If we don't clear it, closing mmap throws BufferError
+            try:
+                crayon_cpu.load_dat(b"") # clear the buffer inside crayon_cpu (hacky but it should work)
+            except Exception:
+                pass
+            try:
+                cls.mmap_obj.close()
+            except BufferError:
+                pass
         if hasattr(cls, 'temp_dat') and os.path.exists(cls.temp_dat):
             os.unlink(cls.temp_dat)
 
@@ -71,13 +80,14 @@ class TestCrayonExtensions(unittest.TestCase):
 
     def test_trainer_basic(self):
         corpus = b"banana banana banana"
-        # Train a small BPE
-        merges = crayon_trainer.train_fast(corpus, 10, min_freq=1, verbose=0)
+        # Train a small BPE. Vocab size must be > 256.
+        merges = crayon_trainer.train_fast(corpus, 260, min_freq=1, verbose=0)
         self.assertIsInstance(merges, list)
         self.assertGreater(len(merges), 0)
-        # Each merge is a pair of strings
+        # Each merge is a tuple of ((token_a, token_b), new_id)
         for m in merges:
-            self.assertIsInstance(m, str)
+            self.assertIsInstance(m, tuple)
+            self.assertEqual(len(m), 2)
 
 if __name__ == "__main__":
     unittest.main()

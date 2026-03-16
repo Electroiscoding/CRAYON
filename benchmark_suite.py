@@ -455,7 +455,7 @@ def _plot(results: List[BenchResult], out_dir: Path) -> None:
 
     bar_by_case("tokens_per_sec", "Tokens/sec (higher is better)", "tokens_per_sec.png")
     bar_by_case("mb_per_sec", "MB/sec (higher is better)", "mb_per_sec.png")
-    bar_by_case("load_time_ms", "Load time (ms) (lower is better)", "load_time_ms.png")
+    bar_by_case("cold_load_time_ms", "Load time (ms) (lower is better)", "load_time_ms.png")
     bar_by_case("tokens_produced", "Tokens produced (avg per run)", "tokens_produced.png")
 
 
