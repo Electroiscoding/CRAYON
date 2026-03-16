@@ -127,13 +127,31 @@ class BenchResult:
     impl: str
     case: str
     status: str
-    load_time_ms: float
+    cold_load_time_ms: float
+    warm_load_time_ms: float
     tokens_produced: int
     bytes_processed: int
     avg_time_ms: float
     tokens_per_sec: float
     mb_per_sec: float
     notes: str = ""
+
+
+@dataclass
+class BenchAggregate:
+    impl: str
+    case: str
+    n: int
+    tokens_per_sec_mean: float
+    tokens_per_sec_std: float
+    cold_load_time_ms_mean: float
+    cold_load_time_ms_std: float
+    warm_load_time_ms_mean: float
+    warm_load_time_ms_std: float
+    mb_per_sec_mean: float
+    mb_per_sec_std: float
+    tokens_produced_mean: float
+    tokens_produced_std: float
 
 
 def _default_cases() -> List[BenchCase]:
@@ -177,7 +195,12 @@ def _run_single(
     try:
         t0 = time.perf_counter()
         load_fn()
-        load_ms = (time.perf_counter() - t0) * 1000.0
+        cold_load_ms = (time.perf_counter() - t0) * 1000.0
+
+        # Warm load measurement: call load again after the cold mapping/parse.
+        t1 = time.perf_counter()
+        load_fn()
+        warm_load_ms = (time.perf_counter() - t1) * 1000.0
 
         payload = case.text * case.repeat
         payload_bytes = payload.encode("utf-8")
@@ -203,7 +226,8 @@ def _run_single(
             impl=impl_name,
             case=case.name,
             status="OK",
-            load_time_ms=load_ms,
+            cold_load_time_ms=cold_load_ms,
+            warm_load_time_ms=warm_load_ms,
             tokens_produced=avg_tokens,
             bytes_processed=len(payload_bytes),
             avg_time_ms=avg_t * 1000.0,
@@ -215,7 +239,8 @@ def _run_single(
             impl=impl_name,
             case=case.name,
             status="FAIL",
-            load_time_ms=0.0,
+            cold_load_time_ms=0.0,
+            warm_load_time_ms=0.0,
             tokens_produced=0,
             bytes_processed=0,
             avg_time_ms=0.0,
@@ -308,6 +333,70 @@ def _write_outputs(results: List[BenchResult], out_dir: Path) -> None:
             w.writerow(r.__dict__)
 
 
+def _std(values: List[float], mean: float) -> float:
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return 0.0
+    var = sum((v - mean) ** 2 for v in values) / float(len(values) - 1)
+    return var ** 0.5
+
+
+def _aggregate(results: List[BenchResult]) -> List[BenchAggregate]:
+    ok = [r for r in results if r.status == "OK"]
+    groups: Dict[Tuple[str, str], List[BenchResult]] = {}
+    for r in ok:
+        groups.setdefault((r.impl, r.case), []).append(r)
+
+    aggs: List[BenchAggregate] = []
+    for (impl, case), rs in sorted(groups.items()):
+        tps = [float(r.tokens_per_sec) for r in rs]
+        cold_lms = [float(r.cold_load_time_ms) for r in rs]
+        warm_lms = [float(r.warm_load_time_ms) for r in rs]
+        mbs = [float(r.mb_per_sec) for r in rs]
+        tok = [float(r.tokens_produced) for r in rs]
+
+        tps_m = sum(tps) / float(len(tps))
+        cold_lms_m = sum(cold_lms) / float(len(cold_lms))
+        warm_lms_m = sum(warm_lms) / float(len(warm_lms))
+        mbs_m = sum(mbs) / float(len(mbs))
+        tok_m = sum(tok) / float(len(tok))
+
+        aggs.append(
+            BenchAggregate(
+                impl=impl,
+                case=case,
+                n=len(rs),
+                tokens_per_sec_mean=tps_m,
+                tokens_per_sec_std=_std(tps, tps_m),
+                cold_load_time_ms_mean=cold_lms_m,
+                cold_load_time_ms_std=_std(cold_lms, cold_lms_m),
+                warm_load_time_ms_mean=warm_lms_m,
+                warm_load_time_ms_std=_std(warm_lms, warm_lms_m),
+                mb_per_sec_mean=mbs_m,
+                mb_per_sec_std=_std(mbs, mbs_m),
+                tokens_produced_mean=tok_m,
+                tokens_produced_std=_std(tok, tok_m),
+            )
+        )
+    return aggs
+
+
+def _write_summary(aggs: List[BenchAggregate], out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    json_path = out_dir / "benchmark_summary.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump([a.__dict__ for a in aggs], f, ensure_ascii=False, indent=2)
+
+    csv_path = out_dir / "benchmark_summary.csv"
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(BenchAggregate.__dataclass_fields__.keys()))
+        w.writeheader()
+        for a in aggs:
+            w.writerow(a.__dict__)
+
+
 def _write_metadata(metadata: Dict[str, Any], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     meta_path = out_dir / "metadata.json"
@@ -374,9 +463,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(prog="benchmark_suite")
     ap.add_argument("--device", default="cpu", choices=["cpu", "auto", "cuda", "rocm"])
     ap.add_argument("--iterations", type=int, default=10)
-    ap.add_argument("--warmup", type=int, default=2)
+    ap.add_argument("--warmup", type=int, default=5)
     ap.add_argument("--out", default=str(Path("benchmark_results") / _now_tag()))
     ap.add_argument("--include-hf", action="store_true")
+    ap.add_argument("--repeats", type=int, default=10)
     args = ap.parse_args()
 
     cases = _default_cases()
@@ -437,38 +527,53 @@ def main() -> int:
         print(f"  - {c.name}: ~{approx_mb:.2f} MB")
     print("-" * 90)
 
-    for impl_name, load_fn, tok_fn in impls:
-        for case in cases:
-            r = _run_single(
-                impl_name=impl_name,
-                case=case,
-                load_fn=load_fn,
-                tokenize_fn=tok_fn,
-                iterations=args.iterations,
-                warmup=args.warmup,
-            )
-            results.append(r)
-            if r.status == "OK":
-                print(
-                    f"[OK] {r.impl:<22} {r.case:<8} "
-                    f"load={r.load_time_ms:>8.2f}ms "
-                    f"avg={r.avg_time_ms:>8.2f}ms "
-                    f"tok={r.tokens_produced:>8} "
-                    f"tps={r.tokens_per_sec:>12.0f} "
-                    f"mbps={r.mb_per_sec:>8.2f}"
+    repeats = int(args.repeats)
+    if repeats < 1:
+        repeats = 1
+
+    print(f"Repeats: {repeats}")
+    print("-" * 90)
+
+    for rep in range(repeats):
+        if repeats > 1:
+            print(f"REPEAT {rep + 1}/{repeats}")
+        for impl_name, load_fn, tok_fn in impls:
+            for case in cases:
+                r = _run_single(
+                    impl_name=impl_name,
+                    case=case,
+                    load_fn=load_fn,
+                    tokenize_fn=tok_fn,
+                    iterations=args.iterations,
+                    warmup=args.warmup,
                 )
-            else:
-                print(f"[FAIL] {r.impl:<22} {r.case:<8} {r.notes}")
+                results.append(r)
+                if r.status == "OK":
+                    print(
+                        f"[OK] {r.impl:<22} {r.case:<8} "
+                        f"cold_load={r.cold_load_time_ms:>8.2f}ms "
+                        f"warm_load={r.warm_load_time_ms:>8.2f}ms "
+                        f"avg={r.avg_time_ms:>8.2f}ms "
+                        f"tok={r.tokens_produced:>8} "
+                        f"tps={r.tokens_per_sec:>12.0f} "
+                        f"mbps={r.mb_per_sec:>8.2f}"
+                    )
+                else:
+                    print(f"[FAIL] {r.impl:<22} {r.case:<8} {r.notes}")
 
     out_dir = Path(args.out)
     _write_outputs(results, out_dir)
     _write_metadata(metadata, out_dir)
+    aggs = _aggregate(results)
+    _write_summary(aggs, out_dir)
     _plot(results, out_dir)
 
     print("-" * 90)
     print("WROTE:")
     print(f"  - {out_dir / 'benchmark_results.json'}")
     print(f"  - {out_dir / 'benchmark_results.csv'}")
+    print(f"  - {out_dir / 'benchmark_summary.json'}")
+    print(f"  - {out_dir / 'benchmark_summary.csv'}")
     print(f"  - {out_dir / 'metadata.json'}")
     print(f"  - {out_dir / 'tokens_per_sec.png'} (if matplotlib installed)")
     print(f"  - {out_dir / 'mb_per_sec.png'} (if matplotlib installed)")
