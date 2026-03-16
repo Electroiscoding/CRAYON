@@ -1245,11 +1245,10 @@ This optimization reduces preprocessing overhead from 50+ cycles to less than 1 
 
 \subsection{Experimental Setup}
 
-\textbf{Hardware Configuration:}
+\textbf{Hardware:}
 \begin{itemize}
-    \item CPU: AMD/Intel with AVX2 support
-    \item GPU: NVIDIA Tesla T4 (Google Colab Pro)
-    \item Memory: 16GB system RAM, 16GB GPU VRAM
+    \item CPU: Intel Core i3-7020U @ 2.30GHz (4 logical cores, AVX2)
+    \item Memory: Windows 10, 16GB system RAM
 \end{itemize}
 
 \textbf{Baselines:}
@@ -1266,45 +1265,38 @@ This optimization reduces preprocessing overhead from 50+ cycles to less than 1 
 
 \begin{table}[H]
 \centering
-\caption{CPU Tokenization Throughput}
+\caption{CPU Tokenization Throughput (Intel i3-7020U @ 2.30GHz)}
 \small
-\begin{tabular}{@{}lr@{}}
+\begin{tabular}{@{}lrr@{}}
 \toprule
-\textbf{Tokenizer} & \textbf{Tokens/sec} \\
+\textbf{Tokenizer} & \textbf{Profile} & \textbf{Tokens/sec} \\
 \midrule
-Crayon (science) & \textbf{40,808,299} \\
-Crayon (code) & 34,742,588 \\
-Crayon (lite) & 18,453,654 \\
+Crayon & lite & \textbf{5,216,527} \\
+Crayon & standard & \textbf{2,335,773} \\
 \midrule
-tiktoken p50k & 719,614 \\
-tiktoken cl100k & 608,610 \\
-HF LLaMA & 343,282 \\
-HF GPT-2 & 307,563 \\
-HF T5 & 272,134 \\
-HF BERT & 195,108 \\
+tiktoken & p50k\_base & 284,002 \\
+tiktoken & cl100k\_base & 263,125 \\
+tiktoken & o200k\_base & 243,180 \\
 \bottomrule
 \end{tabular}
 \label{tab:throughput}
 \end{table}
 
-Crayon achieves 40+ million tokens/second, exceeding all baselines by 1--2 orders of magnitude.
+Crayon achieves 5+ million tokens/second on consumer hardware, exceeding all baselines by 18--22$\times$.
 
 \subsection{Competitive Speedup}
 
 \begin{table}[H]
 \centering
-\caption{Speedup vs Crayon (science)}
+\caption{Speedup vs Crayon (lite profile)}
 \small
 \begin{tabular}{@{}lr@{}}
 \toprule
 \textbf{Tokenizer} & \textbf{Slowdown Factor} \\
 \midrule
-tiktoken p50k & 56.7$\times$ slower \\
-tiktoken cl100k & 67.0$\times$ slower \\
-HF LLaMA & 118.8$\times$ slower \\
-HF GPT-2 & 132.6$\times$ slower \\
-HF T5 & 149.9$\times$ slower \\
-HF BERT & 209.1$\times$ slower \\
+tiktoken p50k\_base & 18.4$\times$ slower \\
+tiktoken cl100k\_base & 19.8$\times$ slower \\
+tiktoken o200k\_base & 21.5$\times$ slower \\
 \bottomrule
 \end{tabular}
 \label{tab:speedup}
@@ -1354,14 +1346,14 @@ Planned enhancements:
 \section{Conclusion}
 \label{sec:conclusion}
 
-We presented XERV Crayon, a production-grade tokenization system achieving over 40 million tokens per second through principled first-principles engineering. The combination of hyper-fast BPE training, cache-aligned Double-Array Tries, and hardware-native omni-backend acceleration establishes a new performance baseline for tokenization infrastructure.
+We presented XERV Crayon, a production-grade tokenization system achieving over 5 million tokens per second through principled first-principles engineering. The combination of hyper-fast BPE training, cache-aligned Double-Array Tries, and hardware-native omni-backend acceleration establishes a new performance baseline for tokenization infrastructure.
 
-The Cartridge System with five production profiles (lite, science, code, multilingual, arts\_commerce) enables domain-specific optimization without sacrificing the unified API. Adaptive vocabulary management with staged commit/rollback ensures graceful handling of distribution shift.
+The Cartridge System with two production profiles (lite, standard) enables domain-specific optimization without sacrificing unified API. 
 
 Comprehensive benchmarks demonstrate:
 \begin{itemize}
-    \item \textbf{56--118$\times$ speedup} over tiktoken and HuggingFace
-    \item \textbf{40+ million tokens/sec} on commodity CPU hardware
+    \item \textbf{18--22$\times$ speedup} over tiktoken on consumer hardware
+    \item \textbf{5+ million tokens/sec} on Intel i3-7020U CPU
     \item \textbf{Sub-millisecond} profile loading via zero-copy mapping
 \end{itemize}
 
