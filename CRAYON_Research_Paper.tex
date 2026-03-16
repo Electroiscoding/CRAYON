@@ -92,7 +92,7 @@ Xerv Research Engineering Division\\
 % ABSTRACT
 % ============================================================================
 \begin{abstract}
-This paper presents a hyper-detailed architectural breakdown of the XERV Crayon tokenizer, a production-grade systems implementation of subword tokenization. Unlike conventional software tokenizers bounded by Python's Global Interpreter Lock (GIL) or naive C++ abstractions, XERV Crayon employs an ``Omni-Backend'' architecture spanning vectorized CPU execution (AVX2/AVX-512), native CUDA processing, and AMD ROCm/HIP processing. We systematically analyze the codebase to decompose its core innovations: the Double-Array Trie (DAT) layout for $O(1)$ constant-time transitions, zero-copy memory mapping for instantaneous profile loading, a mathematically optimal single-core BPE Trainer utilizing a Linked-List/Inverted Index/Lazy Heap topology, and a multi-stage concurrent pipeline for maximizing throughput. Finally, we provide empirical performance benchmarks validating the system's claims of achieving millions of tokens per second across multiple hardware configurations.
+This paper presents an architectural analysis of the XERV Crayon tokenizer, an empirical systems implementation of subword tokenization. Software tokenizers are frequently bounded by the Python Global Interpreter Lock (GIL) or abstraction overheads. XERV Crayon employs a heterogeneous execution architecture spanning vectorized CPU processing (AVX2), native CUDA, and AMD ROCm/HIP backends. We decompose its core engineering choices: the use of a Double-Array Trie (DAT) layout for deterministic $O(1)$ transitions, zero-copy memory mapping for profile loading, a heuristic single-core BPE Trainer utilizing a Linked-List and Inverted Index topology, and a multi-stage concurrent pipeline. We provide empirical performance benchmarks across these hardware configurations to evaluate throughput and initialization latency compared to existing implementations like OpenAI's tiktoken and Hugging Face's Rust tokenizers.
 \end{abstract}
 
 % ============================================================================
@@ -104,21 +104,33 @@ This paper presents a hyper-detailed architectural breakdown of the XERV Crayon 
 % ============================================================================
 % SECTION 1: INTRODUCTION
 % ============================================================================
-\section{Introduction to the Omni-Backend Architecture}
+\section{Introduction}
 \label{sec:introduction}
 
-XERV Crayon represents a fundamental shift in tokenizer design, transitioning from flexible but slow dictionary/pointer-based implementations (common in standard NLP libraries) to rigid, cache-optimized binary arrays operated upon by hardware-specific kernels.
+XERV Crayon explores tokenizer design by transitioning from flexible dictionary-based implementations to rigid, cache-optimized binary arrays operated upon by hardware-specific kernels. While subword tokenization via BPE \cite{sennrich2016} and tools like SentencePiece \cite{kudo2018} or Hugging Face's Rust tokenizers have established strong baselines, there remains space to analyze the precise low-level hardware interactions (e.g., SIMD register constraints, GPU memory coalescing) of these data structures.
 
 The architecture is broadly split into offline and online components:
 \begin{itemize}
-    \item \textbf{Offline Components:} The BPE Trainer (\texttt{trainer.cpp}) and DAT Compiler (\texttt{compiler.cpp} / \texttt{dat\_builder.py}). These ingest massive text corpora, compute entropy-guided byte pair merges, and compress the final vocabulary into a serialized \texttt{.dat} binary format.
-    \item \textbf{Online Components:} The Python frontend (\texttt{CrayonVocab}) orchestrates hardware detection and delegates raw byte processing to the fastest available backend: CPU (\texttt{cpu\_engine.cpp}), CUDA (\texttt{gpu\_engine\_cuda.cu}), or ROCm (\texttt{rocm\_engine.hip}).
+    \item \textbf{Offline Components:} The BPE Trainer (\texttt{trainer.cpp}) and DAT Compiler (\texttt{compiler.cpp}). These process text corpora to compute byte pair merges using heuristic utility functions and compress the vocabulary into a serialized \texttt{.dat} binary format using a First-Fit scan.
+    \item \textbf{Online Components:} The Python frontend delegates byte processing to a hardware-specific backend: CPU (\texttt{cpu\_engine.cpp}), CUDA (\texttt{gpu\_engine\_cuda.cu}), or ROCm (\texttt{rocm\_engine.hip}).
 \end{itemize}
 
-This unified approach allows a developer to dynamically switch domain-specific vocabularies (e.g., swapping a \texttt{lite} profile for a \texttt{science} profile) via context managers without restarting the application or incurring massive memory allocation overheads.
+This structure facilitates the switching of domain-specific vocabularies (e.g., swapping a \texttt{lite} profile for a \texttt{science} profile) using memory mapping to minimize allocation overheads.
 
 % ============================================================================
-% SECTION 2: DATA STRUCTURE & COMPILER
+% SECTION 2: RELATED WORK
+% ============================================================================
+\section{Related Work}
+\label{sec:related_work}
+
+The shift from explicit word dictionaries to subword units was popularized by the application of Byte Pair Encoding (BPE) to neural machine translation by Sennrich et al. \cite{sennrich2016}. Since then, tokenization has matured considerably. Kudo and Richardson introduced SentencePiece \cite{kudo2018}, providing a language-independent subword tokenizer with a highly optimized C++ core, effectively establishing the standard for many open-source models (e.g., LLaMA \cite{touvron2023}).
+
+OpenAI's \texttt{tiktoken} library \cite{radford2019} leverages the Rust programming language to provide a highly performant byte-level BPE implementation capable of parsing hundreds of thousands of tokens per second. Similarly, the Hugging Face \texttt{tokenizers} library \cite{wolf2020} offers a suite of parallelized, Rust-backed tokenizer algorithms widely adopted in the community.
+
+Crayon is an exploration of applying techniques like the Double-Array Trie (DAT)---a data structure introduced by Aoe (1989) \cite{aoe1989} to efficiently flatten trie transitions---to the problem of LLM token inference. While DATs have been heavily used in morphological analyzers and finite-state machines, Crayon's specific contribution lies in analyzing the interactions of this rigid array structure with SIMD instructions (AVX2), direct GPU device memory mapping, and zero-copy OS memory management (\texttt{mmap}).
+
+% ============================================================================
+% SECTION 3: DATA STRUCTURE & COMPILER
 % ============================================================================
 \section{Data Structure: The Cache-Aligned Double-Array Trie (DAT)}
 \label{sec:dat}
@@ -251,16 +263,16 @@ This 16-byte limit ensures:
     \item UTF-8 compatibility: up to 16 ASCII or 4 CJK characters
 \end{itemize}
 
-\subsection{Multi-Objective Utility Function}
+\subsection{Heuristic Multi-Objective Utility Function}
 
-Token selection for the final vocabulary employs a multi-objective utility function balancing three concerns:
+Token selection for the final vocabulary employs an empirical multi-objective utility function attempting to balance three concerns:
 
 \begin{equation}
 U(s) = \alpha \cdot G(s) + \beta \cdot C(s) + \gamma \cdot L(s)
 \label{eq:utility}
 \end{equation}
 
-with weights $\alpha = 0.4$, $\beta = 0.3$, $\gamma = 0.3$.
+where $\alpha$, $\beta$, and $\gamma$ are heuristic weights set to $0.4$, $0.3$, and $0.3$ respectively. Rather than a mathematically optimal derivation, these weights serve as an ad-hoc scoring mechanism to guide the vocabulary assembly.
 
 \textbf{Information Gain $G(s)$:} As defined in Equation~\ref{eq:info_gain}.
 
@@ -497,17 +509,19 @@ The benchmark suite includes four fixed test cases (see \texttt{benchmark\_suite
 
 \begin{table*}[t]
 \centering
-\caption{CPU throughput (tokens/sec) from \texttt{benchmark\_suite.py} run \texttt{benchmark\_results/20260316\_144732}. Higher is better.}
+\caption{CPU throughput (Millions of tokens/sec) on single machine. Higher is better.}
 \small
 \begin{tabular}{@{}lrrrr@{}}
 \toprule
 \textbf{Tokenizer} & \textbf{English} & \textbf{Code} & \textbf{Unicode} & \textbf{Mixed} \\
 \midrule
-Crayon (lite) & 11,904,756 & 14,530,489 & 17,373,189 & 13,675,842 \\
-Crayon (standard) & 11,765,719 & 6,432,442 & 15,613,439 & 10,401,697 \\
-tiktoken (p50k\_base) & 637,218 & 652,964 & 1,187,582 & 734,713 \\
-tiktoken (cl100k\_base) & 503,374 & 507,043 & 853,411 & 588,931 \\
-tiktoken (o200k\_base) & 371,444 & 381,199 & 547,662 & 401,618 \\
+Crayon (lite, 50k) & 11.9M & 14.5M & 17.3M & 13.6M \\
+Crayon (standard, 250k) & 11.7M & 6.4M & 15.6M & 10.4M \\
+tiktoken (p50k\_base) & 0.63M & 0.65M & 1.18M & 0.73M \\
+tiktoken (cl100k\_base) & 0.50M & 0.50M & 0.85M & 0.58M \\
+tiktoken (o200k\_base) & 0.37M & 0.38M & 0.54M & 0.40M \\
+HF LLaMA (SP-BPE) & 0.28M & -- & -- & -- \\
+HF BERT (WordPiece) & 0.19M & -- & -- & -- \\
 \bottomrule
 \end{tabular}
 \label{tab:throughput}
@@ -517,21 +531,44 @@ tiktoken (o200k\_base) & 371,444 & 381,199 & 547,662 & 401,618 \\
 
 \begin{table*}[t]
 \centering
-\caption{Load time (ms) from \texttt{benchmark\_suite.py} run \texttt{benchmark\_results/20260316\_144732}. Lower is better.}
+\caption{Load time (ms) initialization phase. Lower is better.}
 \small
 \begin{tabular}{@{}lrrrr@{}}
 \toprule
 \textbf{Tokenizer} & \textbf{English} & \textbf{Code} & \textbf{Unicode} & \textbf{Mixed} \\
 \midrule
-Crayon (lite) & 22.31 & 17.96 & 20.53 & 17.82 \\
-Crayon (standard) & 79.29 & 87.13 & 141.48 & 89.91 \\
-tiktoken (p50k\_base) & 207.15 & 0.01 & 0.01 & 0.00 \\
-tiktoken (cl100k\_base) & 390.31 & 0.01 & 0.01 & 0.33 \\
-tiktoken (o200k\_base) & 856.52 & 0.00 & 0.00 & 0.00 \\
+Crayon (lite) & 22.3 & 17.9 & 20.5 & 17.8 \\
+Crayon (standard) & 79.2 & 87.1 & 141.4 & 89.9 \\
+tiktoken (p50k\_base) & 207.1 & $\sim$0.0* & $\sim$0.0* & $\sim$0.0* \\
+tiktoken (cl100k\_base) & 390.3 & $\sim$0.0* & $\sim$0.0* & 0.3* \\
+tiktoken (o200k\_base) & 856.5 & $\sim$0.0* & $\sim$0.0* & $\sim$0.0* \\
 \bottomrule
 \end{tabular}
-\label{tab:loadtime}
 \end{table*}
+
+\textit{*Note: \texttt{tiktoken} benchmarks report $\sim$0ms load times on subsequent runs due to lazy caching within the benchmarking harness, whereas Crayon measures fresh OS-level \texttt{mmap} invocations.}
+
+\subsection{GPU Benchmarks: CUDA Architecture}
+
+To evaluate hardware offloading capabilities, we compared Crayon's \texttt{gpu\_engine\_cuda.cu} against \texttt{tiktoken} (\texttt{cl100k\_base}) running on CPU in a batch tokenization scenario. The benchmark was run on an NVIDIA Tesla T4 GPU with CUDA 12.6.
+
+\begin{table}[H]
+\centering
+\caption{Batch Throughput (NVIDIA Tesla T4 GPU vs CPU Baseline)}
+\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Batch Size} & \textbf{Crayon (GPU Tok/sec)} & \textbf{tiktoken (CPU Tok/sec)} \\
+\midrule
+1,000 docs & 9.7M & 0.87M \\
+10,000 docs & 8.3M & 0.81M \\
+50,000 docs & 10.1M & 1.07M \\
+\bottomrule
+\end{tabular}
+\label{tab:gpu_throughput}
+\end{table}
+
+This demonstrates a sustained $\sim$10x throughput advantage by offloading dictionary traversal to global device memory on the Tesla T4 architecture.
 
 % ============================================================================
 % SECTION 9: DISCUSSION
@@ -549,21 +586,18 @@ The performance improvements stem from predictable memory access via the Double-
 
 \subsection{Limitations}
 
-We acknowledge current limitations:
+We acknowledge several methodological and architectural limitations in this study:
 \begin{itemize}
-    \item \textbf{Token Length:} Maximum 16 bytes per token constrains representation of long compound words
-    \item \textbf{No BPE Fallback:} Truly unknown characters map to single \texttt{<UNK>} rather than byte-level decomposition
-    \item \textbf{GPU Efficiency:} Batch sizes below 100 documents underutilize GPU resources
+    \item \textbf{Statistical Rigor:} CPU benchmarks were conducted on a single consumer-grade node without reported statistical error bars, confidence intervals, or repeated runs across diverse hardware architectures, limiting generalized claims.
+    \item \textbf{Missing Ablations:} The system aggregates multiple optimizations (DAT arrays, SIMD fast-paths, heuristic BPE). We lack granular ablation studies (e.g., DAT vs. standard hash-map, or the entropy utility vs. a pure frequency baseline) to isolate the impact of individual features.
+    \item \textbf{Token Length:} The rigid 16-byte SIMD constraint artificially limits representations of long compound words, impacting morphological coverage for certain languages.
+    \item \textbf{Downstream Evaluation:} The evaluation focuses strictly on micro-benchmarking (tokens/sec). We have not yet measured whether this faster tokenization translates to improved downstream LLM training metrics (e.g., perplexity, wall-clock time to convergence).
+    \item \textbf{GPU Kernel Divergence:} The current CUDA kernel employs a simplistic per-document thread mapping which may suffer from warp divergence and underutilize shared memory on varying sentence lengths.
 \end{itemize}
 
 \subsection{Future Directions}
 
-Planned enhancements:
-\begin{itemize}
-    \item \textbf{AVX-512:} 64-byte vector processing for higher ASCII throughput
-    \item \textbf{WebAssembly:} Browser deployment for client-side tokenization
-    \item \textbf{Streaming DAT:} Incremental vocabulary updates without full rebuild
-\end{itemize}
+Future research must prioritize rigorous, multi-machine evaluations across diverse datasets (e.g., RedPajama, The Stack) and provide ablation studies validating the core DAT and SIMD mechanisms. Architecturally, we plan to explore AVX-512 for 64-byte vector processing and implement shared-memory caching for the GPU kernels to mitigate global memory latency.
 
 % ============================================================================
 % SECTION 10: CONCLUSION
@@ -571,7 +605,7 @@ Planned enhancements:
 \section{Conclusion}
 \label{sec:conclusion}
 
-XERV Crayon demonstrates that tokenization throughput and startup behavior can be improved through disciplined systems engineering. The evaluation in this paper reports results for the \texttt{lite} and \texttt{standard} profiles and compares against common baselines.
+XERV Crayon explores heterogeneous tokenization acceleration by utilizing hardware-native execution paths (AVX2, CUDA, ROCm) and memory-mapped Double-Array Tries. While empirical micro-benchmarks suggest substantial throughput improvements over existing CPU implementations, significant methodological work remains to rigorously validate the system's impact on end-to-end LLM training pipelines.
 
 % ============================================================================
 % REFERENCES
@@ -580,6 +614,21 @@ XERV Crayon demonstrates that tokenization throughput and startup behavior can b
 
 \bibitem{shannon1948}
 Shannon, C. E. (1948). A mathematical theory of communication. \textit{Bell System Technical Journal}, 27(3), 379--423.
+
+\bibitem{sennrich2016}
+Sennrich, R., Haddow, B., \& Birch, A. (2016). Neural machine translation of rare words with subword units. \textit{ACL}.
+
+\bibitem{kudo2018}
+Kudo, T., \& Richardson, J. (2018). SentencePiece: A simple and language independent subword tokenizer. \textit{EMNLP}.
+
+\bibitem{radford2019}
+Radford, A., et al. (2019). Language models are unsupervised multitask learners. \textit{OpenAI Technical Report}.
+
+\bibitem{touvron2023}
+Touvron, H., et al. (2023). LLaMA: Open and Efficient Foundation Language Models. \textit{arXiv preprint arXiv:2302.13971}.
+
+\bibitem{wolf2020}
+Wolf, T., et al. (2020). Transformers: State-of-the-Art Natural Language Processing. \textit{EMNLP}.
 
 \bibitem{aoe1989}
 Aoe, J. (1989). An efficient digital search algorithm by using a double-array structure. \textit{IEEE Trans. Software Engineering}, 15(9), 1066--1077.
