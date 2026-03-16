@@ -10,6 +10,101 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 
+def _safe_run_capture(cmd: Sequence[str]) -> Optional[str]:
+    try:
+        import subprocess
+
+        out = subprocess.check_output(list(cmd), stderr=subprocess.STDOUT, text=True)
+        return out.strip()
+    except Exception:
+        return None
+
+
+def _try_import_version(module_name: str) -> Optional[str]:
+    try:
+        mod = __import__(module_name)
+        return getattr(mod, "__version__", None)
+    except Exception:
+        return None
+
+
+def _collect_system_metadata(device: str) -> Dict[str, Any]:
+    import platform
+
+    meta: Dict[str, Any] = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "cwd": os.getcwd(),
+        "device_arg": device,
+        "platform": platform.platform(),
+        "python": sys.version.replace("\n", " ").strip(),
+        "processor": platform.processor(),
+    }
+
+    try:
+        import multiprocessing as mp
+
+        meta["cpu_count_logical"] = mp.cpu_count()
+    except Exception:
+        meta["cpu_count_logical"] = None
+
+    # RAM (best effort)
+    ram_bytes: Optional[int] = None
+    try:
+        import ctypes
+
+        class _MemStatus(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_uint32),
+                ("dwMemoryLoad", ctypes.c_uint32),
+                ("ullTotalPhys", ctypes.c_uint64),
+                ("ullAvailPhys", ctypes.c_uint64),
+                ("ullTotalPageFile", ctypes.c_uint64),
+                ("ullAvailPageFile", ctypes.c_uint64),
+                ("ullTotalVirtual", ctypes.c_uint64),
+                ("ullAvailVirtual", ctypes.c_uint64),
+                ("ullAvailExtendedVirtual", ctypes.c_uint64),
+            ]
+
+        st = _MemStatus()
+        st.dwLength = ctypes.sizeof(_MemStatus)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            ram_bytes = int(st.ullTotalPhys)
+    except Exception:
+        ram_bytes = None
+
+    meta["ram_total_bytes"] = ram_bytes
+
+    # Tooling/GPU info (best effort)
+    meta["nvidia_smi"] = _safe_run_capture(["nvidia-smi", "-L"])  # type: ignore[list-item]
+    meta["rocm_smi"] = _safe_run_capture(["rocm-smi", "-i"])  # type: ignore[list-item]
+
+    # Library versions (best effort)
+    meta["versions"] = {
+        "tiktoken": _try_import_version("tiktoken"),
+        "transformers": _try_import_version("transformers"),
+        "matplotlib": _try_import_version("matplotlib"),
+    }
+
+    # Backend availability in this environment (best effort)
+    backends: Dict[str, Any] = {}
+    try:
+        import torch
+
+        backends["torch"] = getattr(torch, "__version__", None)
+        backends["torch_cuda_is_available"] = bool(torch.cuda.is_available())
+        backends["torch_cuda_device_count"] = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+        if torch.cuda.is_available():
+            try:
+                backends["torch_cuda_device_name_0"] = torch.cuda.get_device_name(0)
+            except Exception:
+                backends["torch_cuda_device_name_0"] = None
+    except Exception:
+        backends["torch"] = None
+
+    meta["backends"] = backends
+    return meta
+
+
 def _now_tag() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -213,6 +308,13 @@ def _write_outputs(results: List[BenchResult], out_dir: Path) -> None:
             w.writerow(r.__dict__)
 
 
+def _write_metadata(metadata: Dict[str, Any], out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = out_dir / "metadata.json"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+
 def _plot(results: List[BenchResult], out_dir: Path) -> None:
     try:
         import matplotlib
@@ -302,12 +404,30 @@ def main() -> int:
 
     results: List[BenchResult] = []
 
+    metadata = _collect_system_metadata(args.device)
+
     print("=" * 90)
     print("CRAYON BENCHMARK SUITE")
     print("=" * 90)
     print(f"Device: {args.device}")
     print(f"Iterations: {args.iterations} | Warmup: {args.warmup}")
     print(f"Output: {args.out}")
+    if metadata.get("platform"):
+        print(f"Platform: {metadata.get('platform')}")
+    if metadata.get("processor"):
+        print(f"CPU: {metadata.get('processor')}")
+    if metadata.get("cpu_count_logical") is not None:
+        print(f"CPU logical cores: {metadata.get('cpu_count_logical')}")
+    if metadata.get("ram_total_bytes"):
+        try:
+            gib = float(metadata["ram_total_bytes"]) / 1024.0 / 1024.0 / 1024.0
+            print(f"RAM (total): {gib:.2f} GiB")
+        except Exception:
+            pass
+    if metadata.get("nvidia_smi"):
+        print("NVIDIA GPUs:")
+        for line in str(metadata["nvidia_smi"]).splitlines():
+            print(f"  {line}")
     print("Implementations:")
     for n, _, _ in impls:
         print(f"  - {n}")
@@ -342,12 +462,14 @@ def main() -> int:
 
     out_dir = Path(args.out)
     _write_outputs(results, out_dir)
+    _write_metadata(metadata, out_dir)
     _plot(results, out_dir)
 
     print("-" * 90)
     print("WROTE:")
     print(f"  - {out_dir / 'benchmark_results.json'}")
     print(f"  - {out_dir / 'benchmark_results.csv'}")
+    print(f"  - {out_dir / 'metadata.json'}")
     print(f"  - {out_dir / 'tokens_per_sec.png'} (if matplotlib installed)")
     print(f"  - {out_dir / 'mb_per_sec.png'} (if matplotlib installed)")
     print(f"  - {out_dir / 'load_time_ms.png'} (if matplotlib installed)")

@@ -1,0 +1,22 @@
+{
+  "timestamp": "2026-03-16T14:47:33",
+  "cwd": "C:\\Users\\botma\\CRAYON",
+  "device_arg": "cpu",
+  "platform": "Windows-10-10.0.19045-SP0",
+  "python": "3.13.1 (tags/v3.13.1:0671451, Dec  3 2024, 19:06:28) [MSC v.1942 64 bit (AMD64)]",
+  "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+  "cpu_count_logical": 4,
+  "ram_total_bytes": 8455294976,
+  "nvidia_smi": null,
+  "rocm_smi": null,
+  "versions": {
+    "tiktoken": "0.9.0",
+    "transformers": "4.57.6",
+    "matplotlib": "3.10.7"
+  },
+  "backends": {
+    "torch": "2.10.0+cpu",
+    "torch_cuda_is_available": false,
+    "torch_cuda_device_count": 0
+  }
+}

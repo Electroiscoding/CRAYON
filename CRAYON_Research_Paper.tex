@@ -92,7 +92,7 @@ Xerv Research Engineering Division\\
 % ABSTRACT
 % ============================================================================
 \begin{abstract}
-We present XERV Crayon, a production-grade tokenization system achieving over 5 million tokens per second through novel architectural innovations. The system implements entropy-guided vocabulary construction via a mathematically optimal Linked-List + Inverted Index + Lazy Heap BPE algorithm, cache-aligned Double-Array Trie data structures with AVX2/AVX-512 SIMD acceleration, and optimized GPU kernels for NVIDIA CUDA platforms. Our architecture enables seamless hardware adaptation with zero-copy memory mapping for 20-115ms profile loading. Empirical evaluation using a standardized benchmark suite with four diverse test cases (english, code, unicode, mixed) demonstrates 9--41$\times$ speedup over existing tokenizers including OpenAI's tiktoken and HuggingFace Transformers.
+We present XERV Crayon, a tokenization system that emphasizes predictable performance through cache-aligned Double-Array Trie (DAT) data structures, SIMD-accelerated CPU execution, and memory-mapped profile loading. The system includes an entropy-guided vocabulary construction pipeline and supports multiple vocabulary profiles. In this paper, the evaluated \texttt{lite} and \texttt{standard} profiles reuse tiktoken vocabularies (\texttt{p50k\_base} and \texttt{p50k\_base}+\texttt{o200k\_base}). Empirical evaluation on a standardized benchmark suite with four test cases (english, code, unicode, mixed) reports throughput and load-time measurements for these profiles and compares against OpenAI's tiktoken.
 \end{abstract}
 
 % ============================================================================
@@ -123,7 +123,7 @@ The tokenization bottleneck manifests across three dimensions:
 
 Contemporary tokenization systems suffer from three fundamental limitations:
 
-\textbf{Vocabulary Rigidity:} Existing tokenizers employ monolithic vocabularies optimized for general-purpose text, resulting in suboptimal compression for specialized domains such as scientific notation (LaTeX equations), programming languages (Python, Rust), or multilingual content (Mandarin, Arabic, Hindi).
+\textbf{Vocabulary Rigidity:} Existing tokenizers employ monolithic vocabularies optimized for general-purpose text, resulting in suboptimal compression for specialized domains such as scientific notation (LaTeX equations) or programming languages (Python, Rust).
 
 \textbf{Hardware Underutilization:} Traditional implementations fail to exploit modern CPU SIMD capabilities (AVX2 provides 32-byte parallel operations, AVX-512 provides 64-byte) and GPU parallel processing. Most tokenizers are pure Python or single-threaded C++.
 
@@ -144,7 +144,7 @@ XERV Crayon is built on three foundational principles:
 This paper presents XERV Crayon, addressing these limitations through five novel contributions:
 
 \begin{enumerate}
-    \item \textbf{Cartridge System:} Hot-swappable vocabulary profiles enabling domain-specific optimization without model retraining. Five production profiles cover science, code, multilingual, arts/commerce, and lightweight deployment scenarios.
+    \item \textbf{Cartridge System:} Hot-swappable vocabulary profiles enabling specialization without model retraining. This paper evaluates two profiles (\texttt{lite} and \texttt{standard}).
     
     \item \textbf{Omni-Backend Architecture:} A unified Python API that transparently dispatches to optimized backends for CPU (AVX2/AVX-512), NVIDIA CUDA, and AMD ROCm, with automatic hardware detection and graceful fallback.
     
@@ -158,6 +158,48 @@ This paper presents XERV Crayon, addressing these limitations through five novel
 \subsection{Paper Organization}
 
 Section~\ref{sec:theory} establishes the theoretical foundations in information theory and hardware constraints. Section~\ref{sec:architecture} details the system architecture including the DAT structure and compilation pipeline. Section~\ref{sec:backends} describes the omni-backend implementation. Section~\ref{sec:profiles} explains the vocabulary profile system. Section~\ref{sec:adaptive} covers adaptive vocabulary management. Section~\ref{sec:optimizations} discusses additional optimizations. Section~\ref{sec:evaluation} presents experimental evaluation, followed by discussion and conclusion.
+
+% ============================================================================
+% SECTION 4: SYSTEM ARCHITECTURE (DETAILED)
+% ============================================================================
+\section{System Architecture (Detailed)}
+\label{sec:architecture}
+
+This section describes the end-to-end execution path of Crayon, focusing on how text bytes are transformed into token IDs with predictable memory access patterns.
+
+\subsection{End-to-End Data Flow}
+
+Given an input UTF-8 string, the runtime performs:
+\begin{enumerate}
+    \item \textbf{Profile selection:} A profile identifier (\texttt{lite} or \texttt{standard}) selects the vocabulary artifact to load.
+    \item \textbf{Memory-mapped load:} The profile's DAT binary is mapped into the process address space (read-only), minimizing parsing and copy overhead.
+    \item \textbf{Backend dispatch:} The Python API selects an execution backend (CPU; and where available CUDA/ROCm) based on the requested device and availability.
+    \item \textbf{Tokenization loop:} The backend scans the byte sequence, performs trie transitions, emits token IDs, and advances the cursor.
+\end{enumerate}
+
+\subsection{Vocabulary Artifacts and Provenance}
+
+The two evaluated profiles in this paper are derived from tiktoken vocabularies:
+\begin{itemize}
+    \item \textbf{\texttt{lite}:} uses the token set from \texttt{p50k\_base} (50k-class vocabulary).
+    \item \textbf{\texttt{standard}:} uses a combined token set constructed from \texttt{p50k\_base}+\texttt{o200k\_base} (250k-class vocabulary).
+\end{itemize}
+
+Crayon compiles the chosen token set into a Double-Array Trie representation for efficient runtime traversal. The benchmark section evaluates only these two profiles.
+
+\subsection{Double-Array Trie Representation}
+
+Crayon represents the vocabulary as a Double-Array Trie (DAT) in two parallel integer arrays, typically called \texttt{base} and \texttt{check}. A transition from a state $s$ using a byte value $b$ computes an index $i = \texttt{base}[s] + b$ and validates it by checking whether \texttt{check}[$i$] equals $s$. When valid, $i$ becomes the next state.
+
+This layout avoids per-node pointers and allows predictable, cache-friendly memory access.
+
+\subsection{Tokenization Semantics}
+
+Tokenization is performed as a left-to-right scan over UTF-8 bytes. At each position, the runtime attempts to follow trie transitions to find the longest matching token (subject to the configured maximum token length). When no further transition is possible, the last accepting state determines the emitted token ID, and the cursor advances.
+
+\subsection{Memory Mapping and Startup Behavior}
+
+Using memory mapping for DAT binaries makes profile loading largely a function of OS page mapping and page faults rather than explicit parsing of text-based vocabulary files. This is why the benchmark suite reports a separate \textit{load time} metric.
 
 % ============================================================================
 % SECTION 2: THEORETICAL FOUNDATIONS
@@ -192,7 +234,7 @@ where $\epsilon \approx 0.5$ accounts for practical overhead including:
     \item Multi-domain coverage requirements
 \end{itemize}
 
-For English text with $H \approx 1.2$, this yields $V_{\text{opt}} \approx 500{,}000$ tokens---the target size for our specialized profiles.
+For English text with $H \approx 1.2$, this yields $V_{\text{opt}} \approx 500{,}000$ tokens as an order-of-magnitude estimate under the stated assumptions; in practice, this paper evaluates fixed profile sizes (\texttt{lite}: 50k, \texttt{standard}: 250k).
 
 \subsection{Information Gain Formulation}
 
@@ -305,11 +347,8 @@ The training pipeline supports three tiers of data sources with automatic fallba
 \toprule
 \textbf{Profile} & \textbf{Datasets} \\
 \midrule
-lite & WikiText-103, Xerv-AI/RainDrop-DTS \\
-science & Xerv-AI/GRAD, Physics-dataset-700, math\_dataset \\
-code & CodeParrot-clean, The-Stack-Smol \\
-multilingual & OSCAR-2201, Wikipedia \\
-arts\_commerce & PG19, Financial Phrasebank, Multi-EURLEX \\
+lite & p50k_base \\
+standard & p50k_base+o200k_base \\
 \bottomrule
 \end{tabular}
 \label{tab:training_sources}
@@ -363,45 +402,8 @@ The first training phase extracts all valid substring candidates from the corpus
         \EndFor
     \EndFor
 \EndFor
-\Return $\mathcal{C}$
 \end{algorithmic}
 \end{algorithm}
-
-The 16-byte constraint (Equation~\ref{eq:simd_constraint}) is enforced at extraction time to prevent oversized candidates from entering the scoring phase.
-
-\subsection{Phase 2: Hyper-Fast BPE Training}
-
-We implement an optimized \textbf{Weighted Linked-List + Inverted Index + Lazy Heap} algorithm in C++17 to perform Exact Greedy BPE. This creates a provably optimal vocabulary with respect to compression:
-
-\begin{enumerate}
-    \item \textbf{Linked List:} Represents text sequences to allow $O(1)$ token merging without array shifting.
-    \item \textbf{Inverted Index:} Maps pairs $(A, B)$ to all their occurrence locations, enabling $O(1)$ lookup.
-    \item \textbf{Lazy Max-Heap:} Stores pair frequencies. "Lazy" updates avoid expensive reheaping on every merge.
-\end{enumerate}
-
-\begin{algorithm}[H]
-\caption{Hyper-Fast BPE Algorithm}
-\small
-\begin{algorithmic}[1]
-\Require Corpus $\mathcal{C}$, Target Vocab Size $V$
-\State Initialize Linked List $L$ from $\mathcal{C}$
-\State Initialize Inverted Index $I$ and Heap $H$
-\While{$|Vocab| < V$}
-    \State $\text{pair} \gets H.\text{pop\_max}()$
-    \If{$\text{pair.freq} \neq \text{current\_freq}$} 
-        \State $H.\text{push}(\text{pair})$ // Lazy validation
-        \State \textbf{continue}
-    \EndIf
-    \State Add pair to vocabulary
-    \For{location $loc$ in $I[\text{pair}]$}
-        \State Merge tokens at $loc$ in $L$
-        \State Update neighbor pairs in $I$ and $H$
-    \EndFor
-\EndWhile
-\end{algorithmic}
-\end{algorithm}
-
-This approach achieves 16,000+ merges per second, completing full profile training in under 2 seconds on standard hardware.
 
 \subsection{Phase 3: Vocabulary Assembly}
 
@@ -435,624 +437,7 @@ for token, _ in scored_candidates[:remaining]:
         vocab.append(token)
 \end{lstlisting}
 
-\subsection{Atomic File Operations}
-
-Profile persistence uses atomic write patterns to prevent corruption:
-
-\begin{enumerate}
-    \item Write vocabulary JSON to temporary file (\texttt{.tmp} suffix)
-    \item Validate JSON integrity
-    \item Atomic rename to final path
-    \item On failure: delete temporary, preserve existing profile
-\end{enumerate}
-
-This ensures that a crash during write never leaves a corrupted profile.
-
-\subsection{DAT Compilation}
-
-After JSON vocabulary creation, the DAT compiler transforms the token list into the binary Double-Array Trie format:
-
-\begin{enumerate}
-    \item Load JSON vocabulary
-    \item Build Python trie in memory
-    \item BFS traversal to pack into Base/Check/Value arrays
-    \item Serialize with magic header (``CRAY'') and version
-    \item Write to \texttt{.dat} file for runtime loading
-\end{enumerate}
-
-The compiled DAT is immediately usable by all backends (CPU, CUDA, ROCm) through memory mapping.
-
-\subsection{Profile Versioning and Caching}
-
-Built profiles are cached under the user's home directory:
-
-\begin{center}
-\texttt{\textasciitilde/.cache/xerv/crayon/profiles/vocab\_\{name\}\_\{version\}.json}
-\end{center}
-
-Version strings (e.g., ``v1'') enable cache invalidation when training parameters change. The fast path returns immediately if a cached profile exists.
-
-\subsection{Training Statistics}
-
-The vocabulary builder exposes construction statistics for debugging and optimization:
-
-\begin{table}[H]
-\centering
-\caption{Vocabulary Construction Statistics}
-\small
-\begin{tabular}{@{}lr@{}}
-\toprule
-\textbf{Metric} & \textbf{Value} \\
-\midrule
-Corpus entropy (English) & $\sim$1.2 bits/char \\
-Optimal vocab size & $\sim$500,000 \\
-Candidates extracted (10K docs) & $\sim$2--5 million \\
-Candidates after frequency filter & $\sim$50--200K \\
-Final vocabulary size & Profile-dependent \\
-\bottomrule
-\end{tabular}
-\label{tab:training_stats}
-\end{table}
-
-% ============================================================================
-% SECTION 4: SYSTEM ARCHITECTURE
-% ============================================================================
-\section{System Architecture}
-\label{sec:architecture}
-
-The XERV Crayon system comprises four tightly integrated subsystems: the entropy-guided vocabulary construction pipeline, the Double-Array Trie compiler, the omni-backend runtime dispatcher, and the adaptive profile management layer.
-
-\subsection{Compilation Pipeline}
-
-The system follows a compilation-based approach where human-readable JSON vocabulary definitions are compiled into optimized binary DAT format for runtime consumption:
-
-\begin{center}
-\small
-\begin{tabular}{@{}ccc@{}}
-\texttt{vocab.json} & $\xrightarrow{\text{DATBuilder}}$ & \texttt{vocab.dat} \\
-(Token List) & Python & (Binary DAT) \\[0.5em]
-& & $\downarrow$ \texttt{mmap} \\[0.5em]
-& & \texttt{Omni-Engine} \\
-& & (CPU/CUDA/ROCm)
-\end{tabular}
-\end{center}
-
-This separation provides:
-\begin{itemize}
-    \item \textbf{Offline Optimization:} Complex algorithms run once at compile time
-    \item \textbf{Fast Loading:} Binary format enables memory mapping
-    \item \textbf{Cross-Platform:} Same DAT works on all backends
-\end{itemize}
-
-\subsection{Double-Array Trie Data Structure}
-
-The Double-Array Trie (DAT) is the core data structure innovation. Unlike pointer-based tries requiring $O(\log n)$ cache misses per traversal, DAT encodes the entire trie in three contiguous integer arrays enabling $O(1)$ state transitions.
-
-\begin{definition}[Double-Array Trie]
-A DAT consists of three parallel arrays $(B, C, V)$ of size $N$ where for state $s$ and input byte $c$:
-\begin{itemize}
-    \item $B[s]$ (Base): Offset for computing child state index
-    \item $C[n]$ (Check): Parent state validation value
-    \item $V[n]$ (Value): Token ID if terminal ($-1$ otherwise)
-\end{itemize}
-\end{definition}
-
-\textbf{State Transition Algorithm:}
-
-Given current state $s$ and input byte $c \in [0, 255]$:
-\begin{enumerate}
-    \item Compute candidate next state: $n = B[s] + c$
-    \item Validate transition: Accept iff $C[n] = s$
-    \item If valid and $V[n] \neq -1$, record token match
-\end{enumerate}
-
-This requires exactly two array lookups per character---$B[s]$ and $C[n]$---with no pointer dereferencing.
-
-\subsubsection{DAT Binary Format}
-
-The compiled DAT file follows a strict memory-mappable binary format:
-
-\begin{table}[H]
-\centering
-\caption{DAT Binary File Format}
-\small
-\begin{tabular}{@{}llr@{}}
-\toprule
-\textbf{Field} & \textbf{Type} & \textbf{Bytes} \\
-\midrule
-Magic Number & ``CRAY'' & 4 \\
-Format Version & uint32 (=2) & 4 \\
-Array Size ($N$) & uint32 & 4 \\
-Base Array & int32[$N$] & $4N$ \\
-Check Array & int32[$N$] & $4N$ \\
-Value Array & int32[$N$] & $4N$ \\
-\bottomrule
-\end{tabular}
-\label{tab:dat_format}
-\end{table}
-
-Total file size: $12 + 12N$ bytes. Actual profile sizes:
-
-\begin{table}[H]
-\centering
-\caption{Production Profile DAT Sizes}
-\small
-\begin{tabular}{@{}lrr@{}}
-\toprule
-\textbf{Profile} & \textbf{Tokens} & \textbf{DAT Size} \\
-\midrule
-lite & 50,000 & 586.65 KB \\
-science & 367 & 5.45 KB \\
-code & 767 & 9.55 KB \\
-multilingual & 382 & 5.53 KB \\
-arts\_commerce & 793 & 9.86 KB \\
-\bottomrule
-\end{tabular}
-\label{tab:dat_sizes}
-\end{table}
-
-\subsubsection{DAT Construction Algorithm}
-
-The \texttt{DATBuilder} class implements first-fit linear scan with dynamic resizing:
-
-\subsubsection{DAT Construction Algorithm}
-
-The \texttt{DATCompiler} uses a hyper-optimized C++ engine with cache-friendly linear scanning:
-
-\begin{algorithm}[H]
-\caption{C++ DAT Compiler Algorithm}
-\small
-\begin{algorithmic}[1]
-\Require Vocabulary $V$
-\Ensure Arrays $(B, C, \text{Val})$
-\State Initializes arrays with 2MB pre-allocation
-\State // Phase 1: In-memory Trie Construction
-\For{each token $s_i$ in $V$}
-    \State Insert $s_i$ into \texttt{TrieNode} structure
-\EndFor
-\State // Phase 2: Recursively resolve Base offsets
-\Function{ResolveNode}{node, idx}
-    \State $\text{children} \gets$ node.children keys
-    \State // Critical: "Parking Spot" Search
-    \State $q \gets 1$
-    \While{collision in $C[q + c]$ for any $c \in \text{children}$}
-        \State $q \gets q + 1$
-    \EndWhile
-    \State $B[\text{idx}] \gets q$
-    \For{each $c$ in \text{children}}
-        \State $C[q + c] \gets \text{idx}$
-        \State \Call{ResolveNode}{node.child[c], $q + c$}
-    \EndFor
-\EndFunction
-\end{algorithmic}
-\end{algorithm}
-
-The C++ implementation achieves approximately $\sim$500$\times$ speedup over Python by leveraging CPU cache locality during the linear ``parking spot'' search, reducing compile times from hours to seconds for large vocabularies.
-
-The \texttt{FindBaseOffset} function uses linear scan with tracking to minimize array sparsity, achieving 60--80\% density depending on vocabulary characteristics.
-
-\subsection{Cache-Aligned TrieNode Structure}
-
-For the in-memory representation (used during construction), nodes are 64-byte aligned to match CPU cache lines:
-
-\begin{table}[H]
-\centering
-\caption{TrieNode Memory Layout (64 bytes)}
-\small
-\begin{tabular}{@{}lrr@{}}
-\toprule
-\textbf{Field} & \textbf{Type} & \textbf{Offset} \\
-\midrule
-token\_id & int32 & 0--3 \\
-child\_count & uint16 & 4--5 \\
-flags & uint16 & 6--7 \\
-child\_bitmap & uint64 & 8--15 \\
-children* & pointer & 16--23 \\
-child\_chars* & pointer & 24--31 \\
-padding & byte[32] & 32--63 \\
-\bottomrule
-\end{tabular}
-\label{tab:trienode}
-\end{table}
-
-The \texttt{child\_bitmap} enables $O(1)$ child existence checks for ASCII bytes---a single bitwise AND operation.
-
-\subsection{CrayonVocab: The Python Interface}
-
-The \texttt{CrayonVocab} class serves as the unified entry point:
-
-\begin{lstlisting}[language=Python,caption=Core API]
-from crayon import CrayonVocab
-
-# Auto-detect best backend
-vocab = CrayonVocab(device="auto")
-
-# Load specialized vocabulary
-vocab.load_profile("science")
-
-# Tokenize text
-tokens = vocab.tokenize("E = mc^2")
-# Returns: [token_ids...]
-
-# Decode back to text
-text = vocab.decode(tokens)
-\end{lstlisting}
-
-The class handles:
-\begin{itemize}
-    \item Hardware detection (CUDA $>$ ROCm $>$ CPU)
-    \item Profile loading via memory mapping
-    \item Backend dispatch (CPU/CUDA/ROCm)
-    \item Fallback on GPU errors
-    \item Thread-safe tokenization
-\end{itemize}
-
-% ============================================================================
-% SECTION 4: OMNI-BACKEND IMPLEMENTATION
-% ============================================================================
-\section{Omni-Backend Implementation}
-\label{sec:backends}
-
-The omni-backend architecture provides unified tokenization across heterogeneous hardware through three specialized C/CUDA/HIP implementations, each optimized for its target platform.
-
-\subsection{Backend Selection Logic}
-
-At initialization, \texttt{CrayonVocab} performs multi-layer hardware detection:
-
-\begin{enumerate}
-    \item \textbf{CUDA Check:} Import \texttt{crayon\_cuda} extension, query \texttt{cudaGetDeviceCount()}. Success if count $> 0$.
-    \item \textbf{ROCm Check:} Import \texttt{crayon\_rocm} extension, query \texttt{hipGetDevice()}. Success if no error.
-    \item \textbf{CPU Fallback:} Always available. Query AVX2 support via CPUID.
-\end{enumerate}
-
-Priority order: CUDA $>$ ROCm $>$ CPU, overridable via \texttt{CRAYON\_DEVICE} environment variable.
-
-\subsection{CPU Backend: SIMD Acceleration}
-
-The CPU backend leverages AVX2/AVX-512 intrinsics for maximum single-threaded performance through a native C++ extension.
-
-\subsubsection{AVX2 ASCII Fast Path}
-
-English and programming text is predominantly ASCII. The backend exploits this with a specialized fast path:
-
-\begin{lstlisting}[language=C++,caption=AVX2 ASCII Detection]
-inline int is_ascii_32_avx2(const char* p) {
-    __m256i chunk = _mm256_loadu_si256(
-        (const __m256i*)p);
-    // Check MSB of each byte
-    int mask = _mm256_movemask_epi8(chunk);
-    return mask == 0;  // All MSBs zero
-}
-\end{lstlisting}
-
-This function processes 32 bytes in a single instruction. When the input is pure ASCII, the tokenizer skips expensive UTF-8 validation and uses optimized byte-at-a-time matching.
-
-\subsubsection{Hot Loop Implementation}
-
-The core tokenization loop implements longest-match semantics:
-
-\begin{lstlisting}[language=C++,caption=Core Tokenization Loop]
-while (pos < len) {
-    int32_t node = 0;
-    int32_t best_token = 1; // UNK default
-    int32_t best_len = 1;
-    
-    for (size_t i = pos; i < len; ++i) {
-        uint8_t c = (uint8_t)text[i];
-        int32_t next = base[node] + c;
-        
-        // Bounds + validity check
-        if (next >= size || 
-            check[next] != node) break;
-            
-        node = next;
-        int32_t val = values[node];
-        if (val != -1) {
-            best_token = val;
-            best_len = i - pos + 1;
-        }
-    }
-    
-    output[count++] = best_token;
-    pos += best_len;
-}
-\end{lstlisting}
-
-Key optimizations:
-\begin{itemize}
-    \item \textbf{No Function Calls:} Hot loop is fully inlined
-    \item \textbf{Branch Prediction:} Inner loop iterates forward predictably
-    \item \textbf{Cache Locality:} Sequential array access pattern
-\end{itemize}
-
-\subsubsection{Zero-Copy Buffer Protocol}
-
-The backend accepts Python buffer objects directly:
-
-\begin{lstlisting}[language=C++,caption=Python Buffer Protocol]
-Py_buffer ctx_buffer;
-if (PyObject_GetBuffer(obj, &ctx_buffer, 
-                       PyBUF_SIMPLE) != 0) {
-    return NULL;  // TypeError
-}
-// Direct pointer - no memory copy
-char* ptr = (char*)ctx_buffer.buf;
-size_t len = ctx_buffer.len;
-\end{lstlisting}
-
-This enables zero-copy access to memory-mapped DAT files.
-
-\subsection{CUDA Backend: NVIDIA GPU}
-
-The CUDA backend targets NVIDIA Tesla (V100, T4), Ampere (A100, A10), Ada (L40), and Hopper (H100) architectures through a native CUDA extension.
-
-\subsubsection{Kernel Design Philosophy}
-
-GPU tokenization is inherently embarrassingly parallel---each sentence can be processed independently. Our kernel assigns one thread per sentence:
-
-\begin{lstlisting}[language=C++,caption=CUDA Kernel Signature]
-__global__ void tokenize_kernel(
-    const int32_t* __restrict__ base,
-    const int32_t* __restrict__ check,
-    const int32_t* __restrict__ values,
-    const char* __restrict__ text_pool,
-    const int* __restrict__ offsets,
-    int* __restrict__ out_tokens,
-    int* __restrict__ out_counts,
-    int n_sentences,
-    int max_tokens,
-    uint32_t trie_sz) 
-{
-    int idx = blockIdx.x * blockDim.x 
-            + threadIdx.x;
-    if (idx >= n_sentences) return;
-    
-    int start = offsets[idx];
-    int end = offsets[idx + 1];
-    int len = end - start;
-    
-    // Per-thread tokenization...
-}
-\end{lstlisting}
-
-The \texttt{\_\_restrict\_\_} qualifiers enable compiler optimizations by guaranteeing no pointer aliasing.
-
-\subsubsection{Memory Layout}
-
-Device memory is organized for optimal access patterns:
-
-\begin{itemize}
-    \item \textbf{Trie Arrays:} Persistent global memory (allocated once per profile load)
-    \item \textbf{Text Pool:} Batch input flattened into contiguous buffer
-    \item \textbf{Offset Array:} Sentence boundaries for parallel dispatch
-    \item \textbf{Output Buffers:} Pre-allocated based on worst-case token count
-\end{itemize}
-
-\subsubsection{Batch Processing Pipeline}
-
-The complete GPU batch pipeline:
-
-\begin{enumerate}
-    \item \textbf{Flatten:} Concatenate input strings into \texttt{text\_pool} with computed offsets
-    \item \textbf{Upload:} \texttt{cudaMemcpy} text and offsets to device
-    \item \textbf{Launch:} Execute kernel with 128 threads per block
-    \item \textbf{Synchronize:} \texttt{cudaDeviceSynchronize()} for completion
-    \item \textbf{Download:} Copy token IDs and counts back to host
-    \item \textbf{Unflatten:} Split flat output array into per-sentence lists
-\end{enumerate}
-
-Block size of 128 balances occupancy and register pressure across architectures.
-
-\subsection{ROCm Backend: AMD GPU}
-
-The ROCm backend targets AMD Instinct (MI250X, MI300X) and Radeon (RX 7900) GPUs through a native HIP extension---AMD's CUDA-compatible programming model.
-
-\subsubsection{HIP Kernel Implementation}
-
-The HIP kernel is structurally identical to CUDA with AMD-specific tuning:
-
-\begin{lstlisting}[language=C++,caption=HIP Kernel Launch]
-hipLaunchKernelGGL(
-    tokenize_kernel_hip,
-    dim3(blocks), 
-    dim3(256),  // 256 = 4 wavefronts
-    0,          // Shared memory
-    0,          // Stream
-    d_base, d_check, d_values,
-    d_text, d_offsets, 
-    d_out, d_counts,
-    n, max_tok, trie_size);
-\end{lstlisting}
-
-Block size of 256 threads (4 wavefronts of 64 threads each) is optimal for AMD RDNA3/CDNA2 architectures.
-
-\subsubsection{HBM Bandwidth Optimization}
-
-AMD Instinct MI250X features HBM2e with 3.2 TB/s aggregate bandwidth. Our kernel maximizes utilization through:
-
-\begin{itemize}
-    \item \textbf{Coalesced Access:} Adjacent threads access adjacent memory
-    \item \textbf{Minimal Divergence:} All threads in a wavefront follow similar paths
-    \item \textbf{Register Pressure:} Local variables kept in registers (256 VGPRs available)
-\end{itemize}
-
-\subsection{Fallback Mechanism}
-
-If GPU execution fails (out-of-memory, driver errors), the system gracefully falls back to CPU:
-
-\begin{lstlisting}[language=Python,caption=Automatic Fallback]
-try:
-    results = self._gpu_backend.tokenize_batch(batch)
-except Exception as e:
-    self._log_warning(f"GPU failed: {e}")
-    # Transparent fallback
-    results = [self._cpu_backend.tokenize(s) 
-               for s in batch]
-\end{lstlisting}
-
-% ============================================================================
-% SECTION 5: VOCABULARY PROFILE SYSTEM
-% ============================================================================
-\section{Vocabulary Profile System}
-\label{sec:profiles}
-
-The Cartridge System enables domain-specific vocabulary optimization through hot-swappable profiles without model retraining.
-
-\subsection{Profile Architecture}
-
-Each profile is defined by a \texttt{VocabProfile} dataclass:
-
-\begin{table}[H]
-\centering
-\caption{Profile Configuration Schema}
-\small
-\begin{tabular}{@{}lp{3.5cm}@{}}
-\toprule
-\textbf{Field} & \textbf{Description} \\
-\midrule
-name & Unique identifier (e.g., ``science'') \\
-target\_size & Maximum vocabulary size \\
-min\_frequency & Noise filtering threshold \\
-sources & List of (dataset, split, columns) \\
-description & Human-readable purpose \\
-version & Semantic version string \\
-\bottomrule
-\end{tabular}
-\label{tab:profile_schema}
-\end{table}
-
-\subsection{Production Profiles}
-
-Two production-ready profiles address common use cases:
-
-\begin{table}[H]
-\centering
-\caption{Production Vocabulary Profiles with Real Performance}
-\small
-\resizebox{\columnwidth}{!}{%
-\begin{tabular}{@{}lrrrr@{}}
-\toprule
-\textbf{Profile} & \textbf{Target Size} & \textbf{Actual Size} & \textbf{Avg TPS} & \textbf{Load Time (ms)} \\
-\midrule
-lite & 50,000 & 50,000 & 11,450,731 & 20.3--105.0 \\
-standard & 250,000 & 250,000 & 11,694,129 & 85.4--114.6 \\
-\bottomrule
-\end{tabular}
-}
-\label{tab:profiles}
-\end{table}
-
-\subsubsection{Profile: lite}
-
-The lightweight profile optimized for edge deployment and general-purpose text processing. Achieves average performance of 11.5M tokens/sec with ultra-fast 20ms load times.
-
-\subsubsection{Profile: standard}
-
-The full-featured profile optimized for comprehensive text processing including unicode and mixed content. Achieves average performance of 11.7M tokens/sec with 85-115ms load times.
-
-\subsection{Context Manager Hot-Swap}
-
-The context manager pattern enables temporary profile switching:
-
-\begin{lstlisting}[language=Python,caption=Profile Hot-Swap]
-vocab = CrayonVocab(device="cpu")
-vocab.load_profile("lite")
-
-# Main processing with lite
-tokens_a = vocab.tokenize(general_text)
-
-# Temporary switch to standard profile
-with vocab.using_profile("standard"):
-    tokens_b = vocab.tokenize(more_text)
-# Automatically reverts to "lite"
-
-# Continue with lite
-tokens_c = vocab.tokenize(more_text)
-\end{lstlisting}
-
-Profile switches complete in under 1ms due to memory-mapped loading.
-
-\subsection{Zero-Copy Profile Loading}
-
-Profiles load via OS-level memory mapping without explicit file I/O:
-
-\begin{lstlisting}[language=Python,caption=Memory-Mapped Loading]
-import mmap
-
-def load_profile(self, path):
-    with open(path, "rb") as f:
-        self._dat_mm = mmap.mmap(
-            f.fileno(), 0, 
-            access=mmap.ACCESS_READ)
-        
-        # Pass buffer directly to C extension
-        self._cpu_backend.load_dat(self._dat_mm)
-\end{lstlisting}
-
-Benefits:
-\begin{itemize}
-    \item \textbf{Instant Startup:} No explicit file reading
-    \item \textbf{Minimal RAM:} OS manages page faults on demand
-    \item \textbf{Shared Cache:} Multiple processes share read-only pages
-    \item \textbf{No Copy:} C extension accesses mapped memory directly
-\end{itemize}
-
-% ============================================================================
-% SECTION 7: PERFORMANCE OPTIMIZATIONS
-% ============================================================================
-\section{Performance Optimizations}
-\label{sec:optimizations}
-
-Beyond core architecture, several additional optimizations contribute to overall performance.
-
-\subsection{Memory Pool Allocation}
-
-The \texttt{MemoryPool} class amortizes allocation costs for tokenization buffers:
-
-\begin{itemize}
-    \item Pre-allocated pool of 64 $\times$ 64KB buffers
-    \item Thread-safe lock-based acquisition/release
-    \item Automatic pool expansion under sustained load
-    \item Buffer reuse eliminates repeated \texttt{malloc}/\texttt{free}
-\end{itemize}
-
-This reduces GC pressure in high-throughput scenarios by 40--60\%.
-
-\subsection{Pipeline Tokenization}
-
-The \texttt{PipelineTokenizer} implements three-stage concurrent processing using Python threads:
-
-\begin{enumerate}
-    \item \textbf{Normalize Stage:} Unicode NFC normalization (CPU-bound)
-    \item \textbf{Tokenize Stage:} Core vocabulary lookup (C extension)
-    \item \textbf{Format Stage:} Output structuring (dict creation)
-\end{enumerate}
-
-Inter-stage queues with bounded capacity provide backpressure to prevent memory exhaustion. The pipeline achieves 1.8$\times$ throughput over sequential processing by overlapping stages.
-
-\subsection{Zero-Copy File Processing}
-
-The \texttt{ZeroCopyTokenizer} processes files larger than available RAM:
-
-\begin{itemize}
-    \item \textbf{Chunk Size:} 64KB chunks fit L2 cache (256KB--1MB typical)
-    \item \textbf{Overlap:} 1KB overlap for boundary token safety
-    \item \textbf{Streaming:} Generator-based token emission
-    \item \textbf{Memory:} Peak usage equals chunk size + output buffer
-\end{itemize}
-
-\subsection{Unicode Fast Path}
-
-ASCII-only text (detected via \texttt{str.isascii()}) bypasses Unicode normalization entirely:
-
-\begin{lstlisting}[language=Python,caption=Fast ASCII Path]
-def normalize(text):
-    if text.isascii():
-        return text  # 0.8 cycles/byte
-    return unicodedata.normalize('NFC', text)
-\end{lstlisting}
-
-This optimization reduces preprocessing overhead from 50+ cycles to less than 1 cycle per byte for English text.
+This completes the offline vocabulary construction pipeline.
 
 % ============================================================================
 % SECTION 8: EXPERIMENTAL EVALUATION
@@ -1060,100 +445,57 @@ This optimization reduces preprocessing overhead from 50+ cycles to less than 1 
 \section{Experimental Evaluation}
 \label{sec:evaluation}
 
-\subsection{Experimental Setup}
+\subsection{Benchmark Configuration}
 
-\textbf{Hardware:}
-\begin{itemize}
-    \item CPU: Intel Core i3-7020U @ 2.30GHz (2 cores, 4 logical threads, AVX2)
-    \item Memory: Windows 10, 8GB system RAM (519MB available during benchmark)
-    \item Architecture: x64, L2 Cache: 256KB per core
-\end{itemize}
+Benchmarks were run with the repository script \texttt{benchmark\_suite.py} using \texttt{--device cpu --iterations 10 --warmup 2}. The script writes machine-readable outputs (CSV/JSON) and a \texttt{metadata.json} record in \texttt{benchmark\_results/20260316\_144732}.
 
-\textbf{Baselines:}
-\begin{itemize}
-    \item tiktoken (OpenAI): cl100k\_base (GPT-4), p50k\_base (GPT-3)
-    \item HuggingFace Transformers: GPT-2, BERT, T5, LLaMA
-\end{itemize}
+\textbf{System:} Windows-10-10.0.19045-SP0; CPU: Intel64 Family 6 Model 142 Stepping 9, GenuineIntel; logical cores: 4; RAM: 7.87 GiB.
 
-\textbf{Test Corpus:} Four standardized test cases from benchmark suite:
-\begin{itemize}
-    \item \textbf{english}: General text with punctuation and numbers (0.71 MB per run)
-    \item \textbf{code}: Python matrix multiplication function (1.00 MB per run)
-    \item \textbf{unicode}: Multilingual text with emojis and combining marks (0.63 MB per run)
-    \item \textbf{mixed}: Combined english + code + unicode (1.33 MB per run)
-\end{itemize}
+\textbf{Software:} Python 3.13.1; tiktoken 0.9.0; transformers 4.57.6; matplotlib 3.10.7; torch 2.10.0+cpu; CUDA available: false.
 
-\textbf{Methodology:} 
-\begin{itemize}
-    \item Payload size: Text repeated 2500-6000 times per test case
-    \item Measurements: 10 iterations with 2 warmup runs
-    \item Metrics: Median tokens/sec, MB/sec, and load time reported
-    \item Implementations: Crayon (lite/standard), tiktoken (p50k\_base, cl100k\_base, o200k\_base)
-\end{itemize}
+\subsection{Test Cases and Implementations}
+
+The benchmark suite includes four fixed test cases (see \texttt{benchmark\_suite.py}): \texttt{english}, \texttt{code}, \texttt{unicode}, and \texttt{mixed}. Each case is evaluated against Crayon profiles (\texttt{lite}, \texttt{standard}) and tiktoken baselines (\texttt{p50k\_base}, \texttt{cl100k\_base}, \texttt{o200k\_base}). The evaluated Crayon profiles reuse token sets from \texttt{p50k\_base} (\texttt{lite}) and \texttt{p50k\_base}+\texttt{o200k\_base} (\texttt{standard}).
 
 \subsection{CPU Throughput Results}
 
-\begin{table}[H]
+\begin{table*}[t]
 \centering
-\caption{Average CPU Tokenization Throughput by Test Case (Intel i3-7020U @ 2.30GHz)}
+\caption{CPU throughput (tokens/sec) from \texttt{benchmark\_suite.py} run \texttt{benchmark\_results/20260316\_144732}. Higher is better.}
 \small
 \begin{tabular}{@{}lrrrr@{}}
 \toprule
-\textbf{Tokenizer} & \textbf{Profile} & \textbf{English} & \textbf{Code} & \textbf{Unicode} & \textbf{Mixed} \\
+\textbf{Tokenizer} & \textbf{English} & \textbf{Code} & \textbf{Unicode} & \textbf{Mixed} \\
 \midrule
-Crayon & lite & 5,730,446 & 11,450,731 & 11,369,787 & 10,788,654 \\
-Crayon & standard & 9,884,548 & 11,785,802 & 11,224,171 & 9,881,995 \\
-\midrule
-tiktoken & p50k\_base & 610,093 & 392,030 & 495,099 & 396,823 \\
-tiktoken & cl100k\_base & 444,749 & 520,704 & 821,582 & 607,596 \\
-tiktoken & o200k\_base & 372,645 & 386,904 & 476,359 & 420,544 \\
+Crayon (lite) & 11,904,756 & 14,530,489 & 17,373,189 & 13,675,842 \\
+Crayon (standard) & 11,765,719 & 6,432,442 & 15,613,439 & 10,401,697 \\
+tiktoken (p50k\_base) & 637,218 & 652,964 & 1,187,582 & 734,713 \\
+tiktoken (cl100k\_base) & 503,374 & 507,043 & 853,411 & 588,931 \\
+tiktoken (o200k\_base) & 371,444 & 381,199 & 547,662 & 401,618 \\
 \bottomrule
 \end{tabular}
 \label{tab:throughput}
-\end{table}
+\end{table*}
 
-Crayon achieves average performance of 11.7M tokens/sec and maintains 5.7-11.8M tokens/sec across diverse text types, exceeding all baselines by 9--23$\times$ depending on text characteristics.
+\subsection{CPU Load-Time Results}
 
-\subsection{Competitive Speedup Analysis}
-
-\begin{table}[H]
+\begin{table*}[t]
 \centering
-\caption{Speedup Factor vs Crayon Standard Profile by Test Case}
+\caption{Load time (ms) from \texttt{benchmark\_suite.py} run \texttt{benchmark\_results/20260316\_144732}. Lower is better.}
 \small
 \begin{tabular}{@{}lrrrr@{}}
 \toprule
-\textbf{Baseline} & \textbf{English} & \textbf{Code} & \textbf{Unicode} & \textbf{Mixed} \\
+\textbf{Tokenizer} & \textbf{English} & \textbf{Code} & \textbf{Unicode} & \textbf{Mixed} \\
 \midrule
-tiktoken p50k\_base & 16.2$\times$ & 30.1$\times$ & 22.7$\times$ & 24.9$\times$ \\
-tiktoken cl100k\_base & 22.2$\times$ & 22.6$\times$ & 13.7$\times$ & 16.3$\times$ \\
-tiktoken o200k\_base & 26.5$\times$ & 30.5$\times$ & 23.6$\times$ & 23.5$\times$ \\
-\bottomrule
-\end{tabular}
-\label{tab:speedup}
-\end{table}
-
-\subsection{Load Time Performance}
-
-\begin{table}[H]
-\centering
-\caption{Profile Load Time Comparison (milliseconds)}
-\small
-\begin{tabular}{@{}lrr@{}}
-\toprule
-\textbf{Tokenizer} & \textbf{Profile} & \textbf{Load Time (ms)} \\
-\midrule
-Crayon & lite & 21.8--105.0 \\
-Crayon & standard & 85.4--114.6 \\
-\midrule
-tiktoken & p50k\_base & 0.01--272.6 \\
-tiktoken & cl100k\_base & 0.01--553.0 \\
-tiktoken & o200k\_base & 0.01--791.2 \\
+Crayon (lite) & 22.31 & 17.96 & 20.53 & 17.82 \\
+Crayon (standard) & 79.29 & 87.13 & 141.48 & 89.91 \\
+tiktoken (p50k\_base) & 207.15 & 0.01 & 0.01 & 0.00 \\
+tiktoken (cl100k\_base) & 390.31 & 0.01 & 0.01 & 0.33 \\
+tiktoken (o200k\_base) & 856.52 & 0.00 & 0.00 & 0.00 \\
 \bottomrule
 \end{tabular}
 \label{tab:loadtime}
-\end{table}
-
-Crayon demonstrates consistent load times (20-115ms) due to memory-mapped DAT files, while tiktoken shows variable performance with some instances loading instantly (cached) and others taking up to 791ms for larger vocabularies.
+\end{table*}
 
 % ============================================================================
 % SECTION 9: DISCUSSION
@@ -1163,44 +505,26 @@ Crayon demonstrates consistent load times (20-115ms) due to memory-mapped DAT fi
 
 \subsection{Benchmark Methodology Insights}
 
-Our standardized benchmark suite reveals important performance characteristics across text types:
-
-\textbf{Unicode Performance:} Crayon achieves peak performance (15.2M tokens/sec) on unicode text, demonstrating efficient handling of multilingual content and emojis. The ASCII fast path optimization provides minimal benefits here, highlighting the robustness of the core trie traversal.
-
-\textbf{Code Performance:} Both Crayon profiles excel on code (11.8-13.6M tokens/sec), benefiting from programming language keywords and structured syntax that align well with BPE tokenization principles.
-
-\textbf{Load Time Consistency:} Crayon's memory-mapped DAT files provide predictable 20-115ms load times across profiles, while tiktoken shows high variance (0.01-791ms) likely due to vocabulary parsing and caching effects.
-
-\textbf{Profile Selection Impact:} The "lite" profile outperforms "standard" on english and code text due to smaller vocabulary size and better cache utilization, while "standard" excels on unicode text due to specialized token coverage.
+Our standardized benchmark suite reveals performance characteristics across text types. Throughput results are reported in Table~\ref{tab:throughput}, and load-time results are reported in Table~\ref{tab:loadtime}.
 
 \subsection{Architectural Insights}
 
-The dramatic performance improvements stem from three synergistic innovations:
-
-\textbf{Cache Efficiency:} The Double-Array Trie eliminates pointer chasing, ensuring predictable sequential memory access. Each state transition requires exactly two array lookups with perfect cache locality.
-
-\textbf{SIMD Parallelism:} AVX2 instructions process 32 bytes per cycle. The ASCII fast path converts 32 sequential byte checks into a single \texttt{\_mm256\_movemask\_epi8} instruction.
-
-\textbf{Hardware-Native Execution:} C/CUDA/HIP implementations bypass Python interpreter overhead. The GIL is released during tokenization, enabling true parallelism.
+The performance improvements stem from predictable memory access via the Double-Array Trie representation, SIMD-accelerated fast paths on CPU where applicable, and minimized startup overhead through memory-mapped loading.
 
 \subsection{Limitations}
 
 We acknowledge current limitations:
-
 \begin{itemize}
     \item \textbf{Token Length:} Maximum 16 bytes per token constrains representation of long compound words
     \item \textbf{No BPE Fallback:} Truly unknown characters map to single \texttt{<UNK>} rather than byte-level decomposition
     \item \textbf{GPU Efficiency:} Batch sizes below 100 documents underutilize GPU resources
-    \item \textbf{Profile Size:} Specialized profiles require domain-specific training data
 \end{itemize}
 
 \subsection{Future Directions}
 
 Planned enhancements:
-
 \begin{itemize}
-    \item \textbf{AVX-512:} 64-byte vector processing for 2$\times$ ASCII throughput
-    \item \textbf{Tensor Cores:} Matrix-based longest-match for transformer-style batch processing
+    \item \textbf{AVX-512:} 64-byte vector processing for higher ASCII throughput
     \item \textbf{WebAssembly:} Browser deployment for client-side tokenization
     \item \textbf{Streaming DAT:} Incremental vocabulary updates without full rebuild
 \end{itemize}
@@ -1211,40 +535,7 @@ Planned enhancements:
 \section{Conclusion}
 \label{sec:conclusion}
 
-XERV Crayon demonstrates that production-grade tokenization can achieve order-of-magnitude improvements through principled engineering. Our implementation delivers 9--41$\times$ speedup over existing solutions while maintaining compatibility and ease of use.
-
-\subsection{Key Contributions}
-
-\textbf{Performance:} Achieved 11.7M tokens/sec average throughput on consumer hardware, making real-time tokenization viable for production deployments.
-
-\textbf{Architecture:} Successfully implemented cache-aligned Double-Array Trie with AVX2 SIMD acceleration and GPU acceleration for NVIDIA platforms.
-
-\textbf{Infrastructure:} Built comprehensive training system with C++ accelerated BPE trainer and multiple domain-specific training scripts.
-
-\textbf{Reliability:} Demonstrated consistent 20-115ms profile loading times and robust fallback mechanisms.
-
-\subsection{Current Capabilities}
-
-The production system provides:
-\begin{itemize}
-    \item Two production vocabularies (lite: 50k, standard: 250k tokens)
-    \item CPU and CUDA GPU backends with automatic hardware detection
-    \item Comprehensive training infrastructure for custom vocabulary development
-    \item Memory-mapped profile loading with sub-100ms startup times
-    \item 11.7--23$\times$ performance improvement over tiktoken baselines
-\end{itemize}
-
-\subsection{Future Work}
-
-Current limitations and planned improvements include:
-\begin{itemize}
-    \item ROCm backend completion for AMD GPU support
-    \item Specialized vocabulary profiles for domain-specific optimization
-    \item Adaptive vocabulary management system implementation
-    \item Enhanced GPU batch processing for smaller workloads
-\end{itemize}
-
-XERV Crayon represents a practical, deployable solution that bridges the gap between research innovations and production requirements, providing genuine performance benefits for real-world NLP applications.
+XERV Crayon demonstrates that tokenization throughput and startup behavior can be improved through disciplined systems engineering. The evaluation in this paper reports results for the \texttt{lite} and \texttt{standard} profiles and compares against common baselines.
 
 % ============================================================================
 % REFERENCES
