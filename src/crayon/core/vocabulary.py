@@ -1,5 +1,5 @@
 """
-XERV CRAYON V4.2.0 - OMNI-BACKEND FRONTEND
+XERV CRAYON V5.1.0 - OMNI-BACKEND FRONTEND
 ==========================================
 The unified interface for CPU (AVX2/512), CUDA (NVIDIA), and ROCm (AMD) tokenization.
 Handles automatic hardware detection, zero-copy memory mapping, and dynamic profile switching.
