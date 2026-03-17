@@ -53,7 +53,6 @@ __global__ void tokenize_kernel(
     int end = offsets[idx + 1];
     int len = end - start;
     
-    int node = 0;
     int count = 0;
     int write_pos = idx * max_tokens;
     int pos = 0;

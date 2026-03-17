@@ -158,6 +158,8 @@ def _detect_cuda_availability() -> Tuple[bool, Optional[str]]:
     try:
         from ..c_ext import crayon_cuda
         info = crayon_cuda.get_hardware_info()
+        if isinstance(info, str) and "No CUDA devices found" in info:
+            return False, info
         if isinstance(info, dict) and info.get("name"):
             return True, None
         return True, None
@@ -508,6 +510,10 @@ class CrayonVocab:
             try:
                 from ..c_ext import crayon_cuda
                 info = crayon_cuda.get_hardware_info()
+
+                if isinstance(info, str) and "No CUDA devices found" in info:
+                    raise RuntimeError(info)
+
                 self._gpu_backend = crayon_cuda
                 self._device_state = DeviceState.READY
                 
