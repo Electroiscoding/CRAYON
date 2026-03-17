@@ -303,14 +303,64 @@ else:
 # SETUP ENTRY POINT
 # ============================================================================
 
-setup(
-    name="xerv-crayon",
-    version=VERSION,
-    packages=find_packages("src"),
-    package_dir={"": "src"},
-    include_package_data=True,
-    ext_modules=ext_modules,
-    cmdclass=cmdclass,
-    python_requires=">=3.10",
-    zip_safe=False,
-)
+def safe_setup():
+    import sys
+    try:
+        setup(
+            name="xerv-crayon",
+            version=VERSION,
+            packages=find_packages("src"),
+            package_dir={"": "src"},
+            include_package_data=True,
+            ext_modules=ext_modules,
+            cmdclass=cmdclass,
+            python_requires=">=3.10",
+            zip_safe=False,
+        )
+    except SystemExit as e:
+        if e.code != 0:
+            log(f"Initial setup with GPU extensions failed with SystemExit: {e.code}")
+            log("Falling back to CPU-only build.")
+
+            # Filter out GPU extensions
+            cpu_only_ext_modules = [
+                ext for ext in ext_modules
+                if ext.name in ["crayon.c_ext.crayon_cpu", "crayon.c_ext.crayon_trainer", "crayon.c_ext.crayon_compiler"]
+            ]
+
+            setup(
+                name="xerv-crayon",
+                version=VERSION,
+                packages=find_packages("src"),
+                package_dir={"": "src"},
+                include_package_data=True,
+                ext_modules=cpu_only_ext_modules,
+                cmdclass={},
+                python_requires=">=3.10",
+                zip_safe=False,
+            )
+        else:
+            raise
+    except Exception as e:
+        log(f"Initial setup with GPU extensions failed: {e}")
+        log("Falling back to CPU-only build.")
+
+        # Filter out GPU extensions
+        cpu_only_ext_modules = [
+            ext for ext in ext_modules
+            if ext.name in ["crayon.c_ext.crayon_cpu", "crayon.c_ext.crayon_trainer", "crayon.c_ext.crayon_compiler"]
+        ]
+
+        setup(
+            name="xerv-crayon",
+            version=VERSION,
+            packages=find_packages("src"),
+            package_dir={"": "src"},
+            include_package_data=True,
+            ext_modules=cpu_only_ext_modules,
+            cmdclass={},
+            python_requires=">=3.10",
+            zip_safe=False,
+        )
+
+safe_setup()

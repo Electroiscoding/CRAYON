@@ -1,0 +1,22 @@
+{
+  "timestamp": "2026-03-17T05:38:38",
+  "cwd": "/app",
+  "device_arg": "cpu",
+  "platform": "Linux-6.8.0-x86_64-with-glibc2.39",
+  "python": "3.12.13 (main, Mar  6 2026, 16:37:31) [GCC 13.3.0]",
+  "processor": "x86_64",
+  "cpu_count_logical": 4,
+  "ram_total_bytes": null,
+  "nvidia_smi": null,
+  "rocm_smi": null,
+  "versions": {
+    "tiktoken": null,
+    "transformers": null,
+    "matplotlib": null
+  },
+  "backends": {
+    "torch": "2.10.0+cu128",
+    "torch_cuda_is_available": false,
+    "torch_cuda_device_count": 0
+  }
+}
