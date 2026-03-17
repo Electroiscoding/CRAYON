@@ -1,4 +1,3 @@
-# Crayon v5.1.0 Demo
 
 from crayon import CrayonVocab
 
