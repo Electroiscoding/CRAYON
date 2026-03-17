@@ -71,7 +71,10 @@ def is_cuda_available() -> bool:
     try:
         from . import crayon_cuda as _cuda
         # Verify it's functional
-        _ = _cuda.get_hardware_info()
+        info = _cuda.get_hardware_info()
+        if isinstance(info, str) and "No CUDA devices found" in info:
+            _cuda_error = info
+            return False
         _cuda_module = _cuda
         return True
     except ImportError as e:

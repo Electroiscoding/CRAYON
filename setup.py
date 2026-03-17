@@ -55,7 +55,7 @@ try:
     # FOR PRODUCTION/CI: Build if CUDA_HOME exists and CRAYON_FORCE_CUDA is set,
     # even if no GPU is found on the build machine.
     FORCE_CUDA = os.environ.get("CRAYON_FORCE_CUDA", "0") == "1"
-    TORCH_CUDA_AVAILABLE = (torch.cuda.is_available() or FORCE_CUDA) and (CUDA_HOME is not None)
+    TORCH_CUDA_AVAILABLE = (torch.cuda.is_available() or FORCE_CUDA) and (CUDA_HOME is not None or shutil.which("nvcc") is not None)
     
 except ImportError:
     TORCH_CUDA_AVAILABLE = False
