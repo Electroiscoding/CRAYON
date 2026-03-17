@@ -529,7 +529,8 @@ class CrayonVocab:
                     _logger.info("🟢 NVIDIA CUDA Engine Active: %s", info)
                 return
             except ImportError:
-                _logger.warning("CUDA extension not compiled. Falling back to CPU.")
+                detailed_error = self._get_cuda_import_error()
+                _logger.warning("CUDA extension not compiled. Falling back to CPU.\n%s", detailed_error)
             except Exception as e:
                 _logger.warning("CUDA initialization failed (%s). Falling back to CPU.", e)
             
@@ -572,6 +573,108 @@ class CrayonVocab:
             self.device = "cpu"
             self._init_selected_backend()
             return
+    
+    def _get_cuda_import_error(self) -> str:
+        """
+        Generate detailed CUDA import error information for debugging.
+        
+        Returns:
+            Detailed multi-line error message with specific fixes.
+        """
+        import shutil
+        import sys
+        
+        error_lines = [
+            "╔══════════════════════════════════════════════════════════════════════════════╗",
+            "║                    CUDA EXTENSION COMPILATION FAILED                        ║", 
+            "╚══════════════════════════════════════════════════════════════════════════════╝",
+            "",
+            "ROOT CAUSE ANALYSIS:",
+            "────────────────────",
+        ]
+        
+        # Check NVCC
+        nvcc_path = shutil.which("nvcc")
+        if nvcc_path:
+            error_lines.append(f"✓ NVCC found: {nvcc_path}")
+        else:
+            error_lines.append("✗ NVCC NOT FOUND - NVIDIA CUDA Toolkit not installed or not in PATH")
+            error_lines.append("")
+            error_lines.append("INSTALLATION FIX:")
+            error_lines.append("1. Install NVIDIA CUDA Toolkit (12.1+ recommended):")
+            error_lines.append("   https://developer.nvidia.com/cuda-downloads")
+            error_lines.append("2. Add CUDA to PATH:")
+            error_lines.append("   Windows: C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.x\\bin")
+            error_lines.append("   Linux:   /usr/local/cuda/bin")
+            error_lines.append("3. Restart terminal/command prompt")
+        
+        # Check PyTorch CUDA
+        try:
+            import torch
+            if torch.cuda.is_available():
+                error_lines.append(f"✓ PyTorch CUDA: Available (v{torch.__version__})")
+            else:
+                error_lines.append(f"✗ PyTorch CUDA: NOT AVAILABLE (v{torch.__version__}+cpu)")
+                error_lines.append("")
+                error_lines.append("PYTORCH FIX:")
+                error_lines.append("1. Uninstall CPU-only PyTorch:")
+                error_lines.append("   pip uninstall torch")
+                error_lines.append("2. Install CUDA version:")
+                error_lines.append("   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+        except ImportError:
+            error_lines.append("✗ PyTorch: NOT INSTALLED")
+            error_lines.append("")
+            error_lines.append("PYTORCH INSTALLATION:")
+            error_lines.append("pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+        
+        # Check CUDA_HOME
+        cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+        if cuda_home:
+            error_lines.append(f"✓ CUDA_HOME: {cuda_home}")
+        else:
+            error_lines.append("✗ CUDA_HOME NOT SET")
+            error_lines.append("")
+            error_lines.append("ENVIRONMENT VARIABLES:")
+            error_lines.append("Windows: Set CUDA_PATH = C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.x")
+            error_lines.append("Linux:   export CUDA_HOME=/usr/local/cuda")
+        
+        # Check GPU hardware
+        try:
+            import torch
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                gpu_name = torch.cuda.get_device_name(0)
+                error_lines.append(f"✓ GPU Hardware: {gpu_name}")
+            else:
+                error_lines.append("✗ No CUDA-compatible GPU detected")
+        except:
+            error_lines.append("⚠ Cannot detect GPU hardware")
+        
+        # Compilation instructions
+        error_lines.extend([
+            "",
+            "RECOMPilation INSTRUCTIONS:",
+            "──────────────────────────",
+            "After fixing the above issues, rebuild CRAYON:",
+            "",
+            "Development install:",
+            "   pip install -e . --force-reinstall --verbose",
+            "",
+            "Production install:",
+            "   pip install --force-reinstall xerv-crayon --verbose",
+            "",
+            "Forced CUDA build (if you have CUDA but no GPU):",
+            "   set CRAYON_FORCE_CUDA=1",
+            "   pip install -e . --force-reinstall",
+            "",
+            "Generic wheel build (for distribution):",
+            "   set CRAYON_GENERIC_BUILD=1",
+            "   python -m build",
+            "",
+            "If problems persist, check: https://github.com/Electroiscoding/CRAYON/issues",
+            "╔══════════════════════════════════════════════════════════════════════════════╗"
+        ])
+        
+        return "\n".join(error_lines)
     
     def set_device(
         self,
