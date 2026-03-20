@@ -25,22 +25,81 @@ import sys
 from typing import Optional, Tuple
 
 # ============================================================================
-# CPU BACKEND (Required)
+# CPU BACKEND (Required - Lazy Import to avoid circular dependencies)
 # ============================================================================
 
-try:
-    from . import crayon_cpu
-except ImportError as e:
-    # Provide helpful error message for common issues
-    _cpu_error = (
-        "Failed to import crayon_cpu extension. This is required for Crayon to work.\n"
-        "Possible causes:\n"
-        "  1. The package was not installed correctly (try: pip install --force-reinstall xerv-crayon)\n"
-        "  2. The C++ extension failed to compile (check for compiler errors during install)\n"
-        "  3. Python version mismatch (Crayon requires Python 3.10+)\n"
-        f"Original error: {e}"
-    )
-    raise ImportError(_cpu_error) from e
+_cpu_module: Optional[object] = None
+_cpu_checked: bool = False
+_cpu_error: Optional[str] = None
+
+
+def _load_cpu_backend() -> Optional[object]:
+    """Internal function to load the CPU backend."""
+    global _cpu_checked, _cpu_module, _cpu_error
+    
+    if _cpu_checked:
+        return _cpu_module
+    
+    _cpu_checked = True
+    try:
+        # Use absolute import to avoid circular dependency issues
+        import crayon.c_ext.crayon_cpu as _cpu
+        # Verify it's functional
+        if hasattr(_cpu, 'tokenize') and hasattr(_cpu, 'load_dat'):
+            _cpu_module = _cpu
+            return _cpu_module
+        else:
+            _cpu_error = "crayon_cpu module missing required functions (tokenize, load_dat)"
+            return None
+    except ImportError as e:
+        _cpu_error = (
+            f"Failed to import crayon_cpu extension. {e}\n"
+            "Possible causes:\n"
+            "  1. The package was not installed correctly (try: pip install --force-reinstall xerv-crayon)\n"
+            "  2. The C++ extension failed to compile (check for compiler errors during install)\n"
+            "  3. Python version mismatch (Crayon requires Python 3.10+)"
+        )
+        return None
+    except Exception as e:
+        _cpu_error = f"Unexpected error loading crayon_cpu: {e}"
+        return None
+
+
+def get_cpu_backend() -> Optional[object]:
+    """Get the CPU backend module, loading it if necessary."""
+    return _load_cpu_backend()
+
+
+def is_cpu_available() -> bool:
+    """Check if the CPU backend is available."""
+    return _load_cpu_backend() is not None
+
+
+def get_cpu_error() -> Optional[str]:
+    """Get the error message if CPU backend is unavailable."""
+    _load_cpu_backend()  # Ensure check has run
+    return _cpu_error
+
+
+# Create a proxy object for backward compatibility
+class _CPUProxy:
+    """Proxy object that lazily loads crayon_cpu when accessed."""
+    
+    def __getattr__(self, name):
+        cpu_module = _load_cpu_backend()
+        if cpu_module is None:
+            raise ImportError(f"CPU backend not available: {get_cpu_error()}")
+        return getattr(cpu_module, name)
+    
+    def __dir__(self):
+        cpu_module = _load_cpu_backend()
+        if cpu_module is None:
+            return []
+        return dir(cpu_module)
+
+
+# Create the proxy instance
+crayon_cpu = _CPUProxy()
 
 
 # ============================================================================
@@ -185,6 +244,9 @@ def get_backend_info() -> dict:
 
 __all__ = [
     "crayon_cpu",
+    "is_cpu_available",
+    "get_cpu_backend",
+    "get_cpu_error",
     "is_cuda_available",
     "is_rocm_available",
     "get_cuda_error",

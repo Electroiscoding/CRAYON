@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xerv-crayon"
-version = "5.2.5"
+version = "5.3.4"
 description = "Omni-Backend Tokenizer - CPU (AVX2/512), CUDA (NVIDIA), ROCm (AMD) with automatic hardware detection"
 readme = "README.md"
 requires-python = ">=3.8,<3.13"
 license = {file = "LICENSE"}
 authors = [
-  {name = "Xerv Research Engineering Division", email = "engineering@xerv.ai"}
+  {name = "Xerv Research Engineering Division", email = "xerv.org@gmail.com"}
 ]
 keywords = [
     "tokenizer", 
@@ -108,7 +108,12 @@ where = ["src"]
     "c_ext/*.c",
     "c_ext/*.cpp",
     "c_ext/*.cu",
-    "c_ext/*.hip"
+    "c_ext/*.hip",
+    "c_ext/*.pyd",
+    "c_ext/*.so",
+    "c_ext/*.py",
+    "c_ext/compiled/*.pyd",
+    "c_ext/compiled/*.so"
 ]
 
 [tool.pytest.ini_options]

@@ -355,6 +355,7 @@ class CrayonVocab:
     __slots__ = (
         "_lock",
         "_cpu_backend",
+        "_cpu_backend_type",
         "_gpu_backend",
         "_dat_file_ref",
         "_dat_mem_ref",
@@ -431,6 +432,7 @@ class CrayonVocab:
         # --- Resolve and Initialize Device ---
         self.device = self._resolve_device(device)
         self._init_selected_backend()
+        print(f"🔧 INITIALIZING DEVICE: {self.device.upper()}")
         
         # --- Load ad-hoc vocab if provided ---
         if vocab_list:
@@ -439,13 +441,46 @@ class CrayonVocab:
     def _load_cpu_backend(self) -> None:
         """Load the CPU extension (required as fallback for all modes)."""
         try:
-            from ..c_ext import crayon_cpu
-            self._cpu_backend = crayon_cpu
+            from ..c_ext import get_cpu_backend
+            cpu_backend = get_cpu_backend()
+            if cpu_backend is None:
+                from ..c_ext import get_cpu_error
+                cpu_error = get_cpu_error()
+                print("🔴 CPU BACKEND FAILED: Using pure Python fallback")
+                print(f"   Error: {cpu_error}")
+                _logger.critical("Failed to load crayon_cpu extension: %s", cpu_error)
+                raise ImportError(
+                    f"Critical Crayon Error: 'crayon_cpu' extension not found. {cpu_error}\n"
+                    "The package may not be installed correctly. Try:\n"
+                    "  pip install --force-reinstall xerv-crayon\n"
+                    "Or for development:\n"
+                    "  pip install -e .\n"
+                )
+            
+            # Check if we're using compiled extension or fallback
+            if hasattr(cpu_backend, '__class__') and 'PurePython' in str(cpu_backend.__class__):
+                print("🟡 CPU BACKEND: Pure Python (slower)")
+                backend_type = "Pure Python"
+            else:
+                print("✅ CPU BACKEND: Compiled C++ Extension (maximum performance)")
+                backend_type = "Compiled C++"
+            
+            # Get hardware info
+            try:
+                hw_info = cpu_backend.get_hardware_info()
+                print(f"   Hardware: {hw_info}")
+            except:
+                print("   Hardware: Unknown")
+            
+            self._cpu_backend = cpu_backend
+            self._cpu_backend_type = backend_type
             _logger.debug("CPU backend loaded successfully")
         except ImportError as e:
-            _logger.critical("Failed to load crayon_cpu extension")
+            print("🔴 CPU BACKEND FAILED: Import error")
+            print(f"   Error: {str(e)}")
+            _logger.critical("Failed to load crayon_cpu extension: %s", str(e))
             raise ImportError(
-                "Critical Crayon Error: 'crayon_cpu' extension not found. "
+                f"Critical Crayon Error: 'crayon_cpu' extension not found. {str(e)}\n"
                 "The package may not be installed correctly. Try:\n"
                 "  pip install --force-reinstall xerv-crayon\n"
                 "Or for development:\n"
@@ -498,9 +533,13 @@ class CrayonVocab:
                     name=info.split("[")[0].strip() if "[" in info else info,
                     features=info.split("[")[1].rstrip("]") if "[" in info else "Standard",
                 )
+                print(f"✅ DEVICE READY: CPU ({self._cpu_backend_type})")
+                print(f"   Hardware: {info}")
                 _logger.info("🔵 CPU Engine Active: %s", info)
             except Exception:
                 self._hardware_info = _get_cpu_info()
+                print(f"✅ DEVICE READY: CPU ({self._cpu_backend_type})")
+                print(f"   Hardware: {self._hardware_info.name}")
                 _logger.info("🔵 CPU Engine Active")
             return
         
