@@ -1,4 +1,3 @@
-
 from crayon import CrayonVocab
 
 tokenizer = CrayonVocab(device="auto")
