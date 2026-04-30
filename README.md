@@ -1,14 +1,14 @@
 
 # Crayon 🖍️
-[span_0](start_span)Crayon is a high-performance, hardware-accelerated tokenizer engineered for instant vocabulary swapping and maximum throughput.[span_0](end_span)
-[span_1](start_span)Designed to eliminate the bottleneck of data preprocessing in LLM pipelines, Crayon operates using a unique **cartridge system**—pre-built vocabulary profiles that can be loaded and swapped instantly.[span_1](end_span) [span_2](start_span)This allows developers to seamlessly switch between 50k and 250k vocabularies without rebuilding the tokenizer state.[span_2](end_span)
+Crayon is a high-performance, hardware-accelerated tokenizer engineered for instant vocabulary swapping and maximum throughput.
+Designed to eliminate the bottleneck of data preprocessing in LLM pipelines, Crayon operates using a unique **cartridge system**—pre-built vocabulary profiles that can be loaded and swapped instantly. This allows developers to seamlessly switch between 50k and 250k vocabularies without rebuilding the tokenizer state.
 ## ⚡ Core Features
-* **[span_3](start_span)Built for Speed:** Written entirely in C++17 utilizing a linked-list BPE (Byte Pair Encoding) algorithm for training.[span_3](end_span)
-* **[span_4](start_span)Hardware Acceleration:** Features native GPU kernels in both CUDA (NVIDIA) and HIP (AMD), alongside CPU AVX2 SIMD support.[span_4](end_span)
-* **[span_5](start_span)Zero-Copy Loading:** Utilizes zero-copy mmap loading for `.DAT` files, enabling near-instantaneous startup times.[span_5](end_span)
-* **[span_6](start_span)Direct Streaming:** Supports zero-disk streaming directly from Hugging Face datasets.[span_6](end_span)
+* **Built for Speed:** Written entirely in C++17 utilizing a linked-list BPE (Byte Pair Encoding) algorithm for training.
+* **Hardware Acceleration:** Features native GPU kernels in both CUDA (NVIDIA) and HIP (AMD), alongside CPU AVX2 SIMD support.
+* **Zero-Copy Loading:** Utilizes zero-copy mmap loading for `.DAT` files, enabling near-instantaneous startup times.
+* **Direct Streaming:** Supports zero-disk streaming directly from Hugging Face datasets.
 ## 🚀 Installation
-[span_7](start_span)Install the latest version directly from PyPI (v2.0.1):[span_7](end_span)
+Install the latest version directly from PyPI (v2.0.1):
 ```bash
 pip install xerv-crayon
 ```
@@ -31,7 +31,8 @@ print("Tokens:", tokens_lite)
 print("Decoded:", tokenizer.decode(tokens_lite))
 ```
 ## 📊 Benchmarks
-Crayon consistently outperforms standard tokenizers in both throughput (Tokens/s) and processing speed (MB/s). Below are the benchmark results comparing Crayon's CPU implementations against standard tiktoken variants across different datasets.
+Crayon consistently outperforms standard tokenizers in both throughput (Tokens/s) and processing speed (MB/s).
+### Visual Performance
 ### Throughput & Performance Table
 
 | Implementation | Dataset | Load Time (ms) | Throughput (Tokens/sec) | Data Rate (MB/sec) |
@@ -40,12 +41,10 @@ Crayon consistently outperforms standard tokenizers in both throughput (Tokens/s
 | **crayon:cpu:lite** | code | 53.47 | **4,052,162** | 7.28 |
 | **crayon:cpu:lite** | unicode | 34.77 | **5,537,900** | 7.35 |
 | **crayon:cpu:lite** | mixed | 44.44 | **2,978,063** | 6.20 |
-| :--- | :--- | :--- | :--- | :--- |
 | **crayon:cpu:standard** | english | 256.84 | **2,980,628** | 15.47 |
 | **crayon:cpu:standard** | code | 373.48 | **2,954,819** | 9.47 |
 | **crayon:cpu:standard** | unicode | 289.20 | **6,557,164** | 19.11 |
 | **crayon:cpu:standard** | mixed | 161.32 | **1,817,683** | 6.50 |
-| :--- | :--- | :--- | :--- | :--- |
 | tiktoken:p50k_base | english | 971.75 | 149,704 | 0.73 |
 | tiktoken:p50k_base | code | 0.02 | 145,018 | 0.35 |
 | tiktoken:cl100k_base | english | 1833.94 | 130,941 | 0.66 |
@@ -56,4 +55,3 @@ Crayon consistently outperforms standard tokenizers in both throughput (Tokens/s
 ### Key Takeaways
  * **Massive Throughput:** Crayon (standard profile on CPU) achieves up to **6.5M tokens/sec** on Unicode datasets, vastly outperforming tiktoken variants which hover between 130k and 320k tokens/sec.
  * **Optimized for Code:** On raw code datasets, Crayon's lite profile processes over **4M tokens/sec**, making it highly optimized for codebase indexing and LLM code-generation pipelines.
-
