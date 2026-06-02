@@ -1,9 +1,9 @@
 # Crayon 🖍️
 Crayon is a high-performance, hardware-accelerated tokenizer engineered for instant vocabulary swapping and maximum throughput.
-Designed to eliminate the bottleneck of data preprocessing in LLM pipelines, Crayon operates using a unique **cartridge system**—pre-built vocabulary profiles that can be loaded and swapped instantly. This allows developers to seamlessly switch between 50k and 250k vocabularies without rebuilding the tokenizer state.
+Designed to eliminate the bottleneck of data preprocessing in LLM pipelines, Crayon operates using a unique **cartridge system**—pre-built vocabulary profiles that can be loaded and swapped instantly. This allows developers to seamlessly switch between 50k (lite) and 206k (standard) vocabularies without rebuilding the tokenizer state.
 
 # Introduction
-CRAYON is a tokenizer that uses a cartridge system.A cartridge is a pre-built vocabulary profile that can be swapped instantly.This allows switching between 50k and 200k vocab easy. Written in C++17 with linked-list BPE (Byte Pair Encoding) for training.Native GPU kernels in CUDA (NVIDIA) and HIP (AMD).Supports CPU with AVX2 & AVX-512 SIMD.Uses zero-copy mmap loading of .DAT files for instant startup.
+CRAYON is a tokenizer that uses a cartridge system. A cartridge is a pre-built vocabulary profile that can be swapped instantly. This allows switching between 50k and 206k vocab easy. Written in C++17 with linked-list BPE (Byte Pair Encoding) for training. Native GPU kernels in CUDA (NVIDIA) and HIP (AMD). Supports CPU with AVX2 & AVX-512 SIMD. Uses zero-copy mmap loading of .DAT files for instant startup.
 
 # Architecture
 
@@ -41,26 +41,26 @@ graph TD
 
 ## 2. Active Profiles (The Cartridge System)
 
-At the core of Crayon's versatility is its **Cartridge System** defined in [profiles.py](/core/profiles.py). Instead of hardcoding vocabulary layouts or loading slow string dicts, Crayon represents vocabularies as pre-built binary profiles loaded instantly via zero-copy memory mapping (`mmap`).
+At the core of Crayon's versatility is its **Cartridge System** defined in [profiles.py](src/crayon/core/profiles.py). Instead of hardcoding vocabulary layouts or loading slow string dicts, Crayon represents vocabularies as pre-built binary profiles loaded instantly via zero-copy memory mapping (`mmap`).
 
 ### 2.1 Primary Pre-Packaged Profiles
-Crayon ships with two canonical production cartridges stored in [src/crayon/resources/dat/](/src/crayon/resources/dat/):
+Crayon ships with two canonical production cartridges stored in [src/crayon/resources/dat/](src/crayon/resources/dat/):
 
 1. **Lite (`lite`)**
-   - **File Paths**: [vocab_lite.dat](/src/crayon/resources/dat/vocab_lite.dat) and [vocab_lite.json](/src/crayon/resources/dat/vocab_lite.json)
+   - **File Paths**: [vocab_lite.dat](src/crayon/resources/dat/vocab_lite.dat) and [vocab_lite.json](src/crayon/resources/dat/vocab_lite.json)
    - **Target Size**: 50,000 subwords
    - **Disk Sizes**: DAT: ~1.17 MB, JSON: ~520 KB
    - **Use Case**: General-purpose LLM tokenization (equivalent to `tiktoken` 50k layouts) with low memory footprints.
 
 2. **Standard (`standard`)**
-   - **File Paths**: [vocab_standard.dat](/src/crayon/resources/dat/vocab_standard.dat) and [vocab_standard.json](/src/crayon/resources/dat/vocab_standard.json)
-   - **Target Size**: 250,000 subwords
+   - **File Paths**: [vocab_standard.dat](src/crayon/resources/dat/vocab_standard.dat) and [vocab_standard.json](src/crayon/resources/dat/vocab_standard.json)
+   - **Target Size**: 206,373 subwords
    - **Disk Sizes**: DAT: ~5.23 MB, JSON: ~2.28 MB
    - **Use Case**: Rich multi-domain/multilingual vocabularies requiring massive context representation.
 
 
 ### 2.2 Profile Resolution Strategy
-When loading a profile via `vocab.load_profile("profile_name")`, the engine executes an ordered path resolution defined in `_get_profile_search_paths()` in [vocabulary.py](/src/crayon/core/vocabulary.py):
+When loading a profile via `vocab.load_profile("profile_name")`, the engine executes an ordered path resolution defined in `_get_profile_search_paths()` in [vocabulary.py](src/crayon/core/vocabulary.py):
 1. **Package Resources**: `src/crayon/resources/dat/vocab_{profile_name}.dat`
 2. **Modern importlib.resources**: Interrogates Python's modern package structure.
 3. **`CRAYON_PROFILE_DIR`**: Local developer directory override.
@@ -97,7 +97,7 @@ For a parent state $s$ and an input byte value $c$:
 ## 4. Systems Architecture: Component-by-Component Analysis
 
 ### 4.1 C++ DAT Compiler (First-Fit Search)
-Located in [compiler.cpp](/src/crayon/c_ext/compiler.cpp), this native C++ class achieves a **~500x speedup** over naive Python-based trie packers.
+Located in [compiler.cpp](src/crayon/c_ext/compiler.cpp), this native C++ class achieves a **~500x speedup** over naive Python-based trie packers.
 
 - **Temporary Trie Structure**: Converts the input list of vocabulary strings into a classic node-and-pointer trie (`TrieNode`).
 - **Array Packing (First-Fit Scan)**:
@@ -181,7 +181,7 @@ Captured on standard commodity x86_64 hardware with a 68.4 KB mixed corpus:
 | Implementation | English | Code | Unicode | Mixed Text |
 | :--- | ---: | ---: | ---: | ---: |
 | **Crayon (`lite`, 50k)** | **18,407,951** | **33,161,787** | **43,921,330** | **24,589,766** |
-| **Crayon (`standard`, 250k)**| **17,154,914** | **18,707,550** | **29,227,498** | **17,394,245** |
+| **Crayon (`standard`, 206k)**| **17,154,914** | **18,707,550** | **29,227,498** | **17,394,245** |
 | tiktoken (`cl100k_base`) | 1,198,631 | 916,869 | 1,696,065 | 1,066,657 |
 | HF GPT-2 Tokenizer | 237,117 | — | — | — |
 
@@ -193,7 +193,7 @@ Captured on standard commodity x86_64 hardware with a 68.4 KB mixed corpus:
 
 ### 7.3 Extreme Stress Test (~100M Characters)
 
-To evaluate the absolute throughput limit and memory stability of Crayon under heavy load, we executed a benchmark tokenizing a massive text block of **~100 million characters** (~95.37 MiB) using the `standard` (200k) profile:
+To evaluate the absolute throughput limit and memory stability of Crayon under heavy load, we executed a benchmark tokenizing a massive text block of **~100 million characters** (~95.37 MiB) in a **Google Colab Tesla T4 GPU test environment** using the `standard` (206k) profile:
 
 ```
 ===========================================================================
@@ -209,4 +209,3 @@ CUDA         | 21,212,115         | 17.3300         | 5.50 MiB/s        | 1.22 M
 *Note on the CUDA/ROCm Truncation Bug:*
 - **Root Cause**: The GPU backends ([gpu_engine_cuda.cu](src/crayon/c_ext/gpu_engine_cuda.cu) and [rocm_engine.hip](src/crayon/c_ext/rocm_engine.hip)) calculated the output buffer token capacity per sequence based on the batch average sentence length, but enforced a strict hardcoded limit of `4096` tokens. Any sequence generating more than 4,096 tokens was silently truncated, leading to data loss on large inputs.
 - **What Changed (Fix)**: The static `4096` cap was replaced with dynamic capacity planning. The engine now determines the maximum sentence length in the batch (`max_len`) and sets sequence capacity to `max_len + 64`. To prevent GPU Out-Of-Memory (OOM) failures under massive batch workloads, it enforces a dynamic safety ceiling based on a total allocation budget of 512M elements (~2 GB). This enables processing massive individual documents safely.
-
