@@ -10,6 +10,12 @@ import subprocess
 import shutil
 from pathlib import Path
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
+
 def build_cuda_extension():
     """Manually build CUDA extension with maximum compatibility"""
     
@@ -33,8 +39,8 @@ def build_cuda_extension():
             break
     
     if not python_include:
-        import distutils.sysconfig
-        python_include = distutils.sysconfig.get_python_inc()
+        import sysconfig
+        python_include = sysconfig.get_path('include')
     
     print(f"✓ Python include: {python_include}")
     

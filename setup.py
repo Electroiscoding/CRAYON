@@ -13,7 +13,7 @@ import subprocess
 from setuptools import setup, find_packages, Extension
 from setuptools.command.build_ext import build_ext
 
-VERSION = "5.3.6"
+VERSION = "5.3.8"
 
 class CustomBuildExt(build_ext):
     """Custom build extension with CUDA support and fallback for missing compilers"""

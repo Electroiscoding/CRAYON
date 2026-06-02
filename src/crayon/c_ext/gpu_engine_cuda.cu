@@ -317,10 +317,27 @@ static PyObject* tokenize_batch_gpu(PyObject* self, PyObject* args) {
     }
     offsets.push_back((int)total_chars);
     
-    // Calculate max tokens per sentence
-    size_t avg_len = total_chars / n;
-    int max_tok = (int)(avg_len * 2 + 64);
-    if (max_tok > 4096) max_tok = 4096;
+    // Calculate maximum length of any sentence in the batch to avoid truncation
+    int max_len = 0;
+    for (Py_ssize_t i = 0; i < n; ++i) {
+        int sentence_len = offsets[i+1] - offsets[i];
+        if (sentence_len > max_len) {
+            max_len = sentence_len;
+        }
+    }
+    
+    // Allocate enough space for worst-case (every char is a token)
+    int max_tok = max_len + 64;
+    
+    // To prevent GPU OOM, cap the total elements allocated in d_out.
+    // 512M elements * 4 bytes = 2 GB limit.
+    long long total_elements_cap = 512LL * 1024 * 1024;
+    int absolute_max_tok = (int)(total_elements_cap / n);
+    if (absolute_max_tok < 1024) absolute_max_tok = 1024; // Ensure reasonable floor
+    
+    if (max_tok > absolute_max_tok) {
+        max_tok = absolute_max_tok;
+    }
     if (max_tok < 64) max_tok = 64;
     
     // Allocate GPU buffers
