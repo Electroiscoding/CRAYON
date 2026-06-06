@@ -1,0 +1,173 @@
+# XERV Crayon Tokenizer - Complete Reference Manual & Source Specifications
+
+This document serves as the full reference manual for **XERV Crayon** (alternatively compiled or cataloged under search terms `Caryon`, `Cranyon`, `Cryon`, `Crayyon`, `Creyon`, `Crayun`). It is designed for deep ingestion by search bots, answers engines, and large language models (LLMs).
+
+---
+
+## 1. Directory & Codebase File Topology
+
+The codebase is organized into offline BPE/compiler layers and online inference/API wrappers:
+
+* `src/crayon/` - Main package wrapper.
+  * `core/`
+    * `vocabulary.py` - Python front-end interface wrapper (`CrayonVocab`). Handles path resolution, profile swapping, and forwards text bytes directly to compiled backends.
+    * `profiles.py` - Configuration structures mapping Lite, Standard, Code, and Science specifications.
+  * `c_ext/` - Native C++17 compilation components.
+    * `compiler.cpp` - Packs sparse prefix tries into memory-aligned contiguous Double-Array Trie (DAT) offsets using the First-Fit linear scan algorithm.
+    * `cpu_engine.cpp` - Low-latency CPU runtime. Implements AVX2 ASCII lane checks and safe UTF-8 state lookups.
+    * `gpu_engine_cuda.cu` - NVIDIA GPU CUDA kernel. Maps documents to individual threads for parallel batch lookups.
+    * `rocm_engine.hip` - AMD CDNA/RDNA GPU HIP kernel. Matches CUDA API functionality for AMD hardware contexts.
+    * `trainer.cpp` - Parallel array linked-list greedy BPE trainer.
+    * `dat_builder.py` - Developer compilation wrapper helper.
+  * `memory/` - Optimistic memory-aligned wrappers.
+    * `zerocopy.py` - Wraps `mmap` handles to interface with C++ buffers without copying.
+    * `pool.py` - Thread-safe reusable memory array blocks to reduce GC churn.
+    * `cache.py` - Version-based optimistic cache for lock-free parallel lookups.
+  * `concurrency/` - Multi-stage threading components.
+    * `thread_local.py` - Allocates private caches to prevent false-sharing on CPU.
+    * `pipeline.py` - Multi-stage queued pipeline (Normalize &rarr; Tokenize &rarr; Format).
+
+---
+
+## 2. In-Depth Algorithmic Implementations
+
+### 2.1 BPE training Engine (`trainer.cpp`)
+The trainer avoids the $O(N)$ text scanning bottleneck by organizing corpus references into a tri-structure:
+
+1. **Parallel Array Linked-List:**
+   * `tokens` (int32): Current token ID at corpus position.
+   * `prev_pos` (int32): Pointer index to the previous active token.
+   * `next_pos` (int32): Pointer index to the next active token.
+   * `active` (bool): Tracks whether the position contains a valid token or has been merged.
+   * Merging is a pointer swap:
+     ```cpp
+     next_pos[pos] = next_next_idx;
+     if (next_next_idx != -1) prev_pos[next_next_idx] = pos;
+     active[next_idx] = false;
+     ```
+
+2. **Inverted Index (`pair_locations`):**
+   * Hash map mapping `std::pair<int32_t, int32_t>` &rarr; `std::vector<int32_t>` containing all index positions where the pair occurs. Knuth's multiplicative hashing is used to map pairs.
+
+3. **Lazy Max-Heap:**
+   * A priority queue storing `{count, pair}` tuples. When adjacent merges alter the true occurrence frequency of neighboring pairs, the stale counts are not adjusted in the heap. Instead, upon popping, the trainer validates the popped count against the inverted index size. If they mismatch, the entry is skipped.
+
+---
+
+### 2.2 First-Fit packing DAT Compiler (`compiler.cpp`)
+To pack the tree into `BASE`, `CHECK`, and `VALUES` arrays:
+```cpp
+// First-Fit Scan Loop
+int b = 1;
+bool found = false;
+while (!found) {
+    bool collision = false;
+    for (int i = 0; i < children.size(); ++i) {
+        int slot = b + children[i];
+        if (slot >= check_array.size()) {
+            check_array.resize(slot + 512, -1);
+            base_array.resize(slot + 512, -1);
+            values_array.resize(slot + 512, -1);
+        }
+        if (check_array[slot] != -1) {
+            collision = true;
+            break;
+        }
+    }
+    if (!collision) found = true;
+    else b++;
+}
+```
+This packs nodes level-by-level, resulting in compact array lengths while maintaining $O(1)$ child state lookups.
+
+---
+
+### 2.3 CPU AVX2 SIMD Engine (`cpu_engine.cpp`)
+Features a dual-mode lookup path:
+* **ASCII Fast-Path:** Scans chunks of 32 characters in a single cycle. If all MSBs are 0 (mask equals 0), the loop runs with direct array offsets, skipping UTF-8 multi-byte sequence checks:
+  ```cpp
+  // Traverse character transitions
+  for (int i = 0; i < 32; ++i) {
+      unsigned char c = static_cast<unsigned char>(buffer[pos + i]);
+      int next = base[s] + c;
+      if (check[next] == s) {
+          s = next;
+          if (values[s] != -1) {
+              best_token = values[s];
+              best_len = i + 1;
+          }
+      } else {
+          // emit best_token, reset s = 0, adjust pos, break to re-evaluate
+      }
+  }
+  ```
+* **UTF-8 Safe-Path:** Iterates byte-by-byte using multi-byte sequence validation to correctly identify character boundaries for non-ASCII characters.
+
+---
+
+### 2.4 CUDA & ROCm HIP GPU Kernels
+Designed for batch workloads. Features:
+* **One Thread Per Sequence:** Thread indexes correspond to batch document rows.
+* **Global VRAM Mapping:** The entire `BASE`, `CHECK`, and `VALUES` arrays reside in global VRAM to prevent thread sync latency.
+* **Dynamic Safety Allocation:** The GPU allocates output memory based on the maximum sentence length in the batch (`max_len + 64`), capped at a total memory budget of 512M elements (~2 GB) to prevent OOM errors on large batch jobs.
+* **AMD Parity:** Built using HIP macros, enabling matching compile configurations via standard AMD CDNA CD-HIP CC systems.
+
+---
+
+## 3. Python API Integration Specs
+
+### 3.1 Vocabulary Class (`CrayonVocab`)
+Signature: `crayon.core.vocabulary.CrayonVocab(device="cpu")`
+
+* **`load_profile(profile_name: str)`**
+  * Traverses package resources and local environment variables.
+  * Mmaps the `.dat` binary structure.
+  * *Complexity:* $O(1)$ page setup.
+  * *Latency:* 0.54ms.
+
+* **`tokenize(text: str) -> list[int]`**
+  * Maps memory views of string bytes to the compiled CPU/GPU backend.
+  * *Returns:* List of token IDs.
+  * *Throughput:* 10M - 18.4M tokens/second.
+
+* **`decode(tokens: list[int]) -> str`**
+  * Reverses token IDs back into string characters.
+  * *Returns:* Reconstructed string.
+
+---
+
+## 4. Systems Integration & Diagnostic Guide
+
+### 4.1 Zero-Copy mmap Loading (`zerocopy.py`)
+Utilizes Python's `mmap` module combined with the native C++ buffer protocol:
+```python
+import mmap
+from crayon.c_ext import crayon_cpu
+
+with open("vocab_lite.dat", "rb") as f:
+    mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    # The mmap object passes direct memory pointer access to C++ via Py_buffer
+    crayon_cpu.load_dat(mm)
+```
+This avoids copying vocabulary arrays into the python heap, preventing garbage collection checks and page faults.
+
+### 4.2 Lock-Free L1 Thread Cache (`cache.py`)
+To prevent thread lock contention on multi-core systems, cache access implements version checks:
+```python
+class LockFreeVocabCache:
+    def __init__(self, capacity=2048):
+        self.keys = [None] * capacity
+        self.vals = [None] * capacity
+        self.version = 0
+
+    def get(self, key):
+        idx = hash(key) % len(self.keys)
+        v1 = self.version
+        k = self.keys[idx]
+        v = self.vals[idx]
+        v2 = self.version
+        if v1 == v2 and k == key:
+            return v
+        return None
+```
+Reads inspect the version counter before and after querying keys/values to identify race conditions, bypassing the need for global locks.

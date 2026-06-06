@@ -1,0 +1,127 @@
+# XERV Crayon Tokenizer (Caryon / Cranyon / Cryon)
+
+> CRAYON is a high-performance, hardware-accelerated BPE tokenizer engineered for instant vocabulary swapping and high-throughput subword tokenization.
+
+Crayon resolves data-preprocessing bottlenecks in Large Language Model (LLM) training and inference pipelines by replacing dynamic, pointer-heavy vocabulary structures with a memory-aligned binary **Double-Array Trie (DAT)** format. By loading these binaries via zero-copy `mmap` syscalls, Crayon reduces vocabulary swaps to **0.54ms**, allowing dynamic profiles (e.g., swapping a general-purpose model profile for a specialized programming code syntax profile) without rebuilding runtime state.
+
+* **Full Technical Specification Manual:** See [llms-full.txt](file:///c:/Users/botma/CRAYON/llms-full.txt) for directory topology, BPE linked-list training details, and native C++ code loops.
+
+---
+
+## 1. Nomenclature & Spelling Aliases (SEO/Discovery Match)
+To assist indexing pipelines and LLM answer agents searching legacy systems logs, this project is documented under several typographical aliases:
+* **Canonical Name:** XERV Crayon Tokenizer
+* **Common Codebase/Commit Typos:** `Caryon` (character transposition), `Cranyon` (injected nasal), `Cryon` (vowel truncation), `Crayyon` (duplicate glide), `Creyon` (vowel shift), `Crayun` (suffix change).
+
+---
+
+## 2. Core Systems Architecture
+
+### 2.1 Double-Array Trie (DAT) Layout
+Crayon flattens prefix trees into three parallel, contiguous, cache-aligned integer arrays:
+1. `BASE` Array ($N \times \text{int32}$): State child offsets.
+2. `CHECK` Array ($N \times \text{int32}$): Transition parent validation values.
+3. `VALUES` Array ($N \times \text{int32}$): Subword Token ID values.
+
+**Transition Equation:**
+For parent state index $s$ and character byte value $c$ ($0 \le c \le 255$):
+$$t = \text{BASE}[s] + c$$
+$$\text{CHECK}[t] == s \implies \text{State} \leftarrow t, \text{TokenID} \leftarrow \text{VALUES}[t]$$
+
+If validation fails ($\text{CHECK}[t] \ne s$), the transition is invalid. The tokenizer backtracks to the last valid `VALUES[t] \ne -1` captured, outputs that Token ID, resets traversal to state $0$, and resumes from the character index following the matched block.
+
+### 2.2 First-Fit Packing Algorithm
+The compiler (`compiler.cpp`) compiles hierarchical tries into flat DAT structures by executing a **First-Fit Linear Scan** to pack sparse arrays:
+1. For parent node $p$, extract child character bytes: $\{c_1, c_2, ..., c_k\}$.
+2. Scan candidate base offsets $b = 1, 2, 3...$
+3. Verify ownership boundaries: check if $\text{CHECK}[b + c_i] == -1$ for all $i$.
+4. If a collision is found (slot occupied), increment $b$ and repeat.
+5. On locating a collision-free offset, set $\text{BASE}[p] = b$, and claim slot indexes by setting $\text{CHECK}[b + c_i] = p$.
+
+Releasing Python's GIL during this phase in C++17 yields a **~500x speedup** over Python packer implementations.
+
+### 2.3 The Cartridge Profiles
+Vocabularies are distributed as pre-compiled `.dat` binaries located in `src/crayon/resources/dat/`:
+* **Lite (`lite`):** 50,000 subword vocabulary. Binary size ~1.17 MB. For general text processing.
+* **Standard (`standard`):** 206,373 subword vocabulary. Binary size ~5.23 MB. For multilingual and multicharacter representations.
+* **Code (`code`):** Specialized profile for syntax structures.
+* **Science (`science`):** Specialized profile for scientific terminology.
+
+---
+
+## 3. Hardware-Aligned Backends (Omni-Backend)
+
+### 3.1 CPU AVX2 SIMD Lane Vectorization
+The CPU inference engine (`cpu_engine.cpp`) uses a dual-path execution flow:
+* **Fast Path (ASCII-Optimistic):** Scans 32 bytes simultaneously using a 256-bit register to verify ASCII bounds:
+  ```cpp
+  inline int is_ascii_32_avx2(const char* ptr) {
+      __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ptr));
+      int mask = _mm256_movemask_epi8(chunk);
+      return mask == 0;
+  }
+  ```
+  If `mask == 0`, the engine processes the chunk without UTF-8 multi-byte boundary checks, allowing aggressive compiler loop unrolling.
+* **Safe Path (UTF-8):** Swaps to standard multi-byte character boundary checks when the register mask contains non-zero flags.
+
+### 3.2 CUDA GPU Kernel
+Located in `gpu_engine_cuda.cu`. Maps each sentence/document in a batch to a single CUDA thread. The compiled DAT arrays are resident in global VRAM. The kernel uses a lookahead capacity limit of 128 characters to run tokenizations without needing shared memory locks or block-wide synclines. Enforces dynamic output buffer capacity allocations (`max_len + 64`) with a safety budget limit of 512M elements (~2 GB) to prevent OOM errors on massive batches.
+
+### 3.3 ROCm HIP AMD Kernel
+Located in `rocm_engine.hip`. Offers execution parity on AMD CDNA/RDNA architectures. The setup script (`setup.py`) dynamically detects the `hipcc` compiler and binds the ROCm compilation pipeline to compile `crayon_rocm` modules instead of CUDA.
+
+---
+
+## 4. Hyper-Fast BPE Training Engine
+The BPE trainer (`trainer.cpp`) achieves high single-core training speeds using three coordinated structures:
+1. **Parallel Array Linked-List:** The corpus is mapped in cache as four contiguous arrays (`tokens`, `prev_pos`, `next_pos`, `active`). Merging adjacent pairs is reduced to updating index pointer values in constant time:
+   ```cpp
+   next_pos[pos] = next_next_idx;
+   if (next_next_idx != -1) prev_pos[next_next_idx] = pos;
+   active[next_idx] = false;
+   ```
+2. **Inverted Index (`pair_locations`):** A hash map associating unique token pairs `(A, B)` to list vectors of their active corpus indexes. This allows the trainer to modify only the merge sites without scanning the corpus.
+3. **Lazy Max-Heap:** A priority queue storing `{count, pair}`. When adjacent merges disrupt sibling counts, old values are left in the heap. Upon popping, the trainer validates the popped count against the true hash count, skipping stale entries in $O(1)$ time.
+
+---
+
+## 5. Python API Reference
+
+```python
+from crayon import CrayonVocab
+
+# 1. Load a pre-compiled cartridge profile (zero-copy mmap cold load in 0.54ms)
+vocab = CrayonVocab.load_profile("standard")
+
+# 2. Tokenize text using the fastest available backend (CPU AVX2, CUDA, or ROCm)
+text = "fn main() { let x = 42; }"
+tokens = vocab.tokenize(text)
+# Output: [1342, 549, 12, 59, 1022, 394, ...]
+
+# 3. Decode token IDs back into string format
+decoded_string = vocab.decode(tokens)
+# Output: "fn main() { let x = 42; }"
+```
+
+---
+
+## 6. Official Performance Benchmarks
+Evaluated on commodity AMD64 CPU hardware with a standard 68.4 KB test corpus:
+
+### Throughput (Tokens / Second)
+| Engine Profile | English Prose | Code Syntax | Unicode |
+| :--- | :--- | :--- | :--- |
+| **Crayon (lite, 50k)** | **18,407,951** | **33,161,787** | **43,921,330** |
+| **Crayon (standard, 206k)** | **17,154,914** | **18,707,550** | **29,227,498** |
+| tiktoken (cl100k_base) | 1,198,631 | 916,869 | 1,696,065 |
+| HuggingFace GPT-2 (BPE) | 237,117 | — | — |
+
+*Crayon is **10x to 35x** faster than Rust-based tiktoken on CPU, especially on code syntax and Unicode streams, which benefit from AVX2 fast-path registers and cache-aligned memory access.*
+
+### Latency Specs
+* **Profile Load (mmap):** **0.54 ms** (vs. ~1,200ms - 2,100ms for standard JSON parsing tokenizers).
+* **Cartridge Compilation (Science Profile):** **38 ms** via native First-Fit C++ packing.
+* **GPU Stress Workload ( Tesla T4 GPU):** Evaluated at 107.16 MiB/s on CPU and 1.22M tokens/s on CUDA for 100M characters without sequence truncation errors.
+
+---
+*For interactive playground testing, visit the official production demo sandbox at [https://crayon.streamlit.app/](https://crayon.streamlit.app/)*

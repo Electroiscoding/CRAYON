@@ -1,0 +1,47 @@
+# robots.txt for Crayon Documentation and Discovery Portal
+
+User-agent: *
+Allow: /
+
+# Explicit configurations for Large Language Model & AI Search Crawlers
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: Claude-Web
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Anthropic-AI
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: Cohere-ai
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: FacebookBot
+Allow: /
+
+User-agent: Diffbot
+Allow: /
+
+User-agent: bytespider
+Allow: /
+
+# Location of XML sitemap
+Sitemap: https://xerv.ai/crayon/sitemap.xml
