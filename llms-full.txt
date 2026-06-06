@@ -2,6 +2,9 @@
 
 This document serves as the full reference manual for **XERV Crayon** (alternatively compiled or cataloged under search terms `Caryon`, `Cranyon`, `Cryon`, `Crayyon`, `Creyon`, `Crayun`). It is designed for deep ingestion by search bots, answers engines, and large language models (LLMs).
 
+* **Cloudflare Pages Mirror:** [https://xerv-crayon.pages.dev/](https://xerv-crayon.pages.dev/)
+* **Netlify Mirror (Static SEO):** [https://xerv-crayon.netlify.app/](https://xerv-crayon.netlify.app/) (configured strictly for static HTML/SEO rendering)
+
 ---
 
 ## 1. Directory & Codebase File Topology

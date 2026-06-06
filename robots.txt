@@ -43,5 +43,6 @@ Allow: /
 User-agent: bytespider
 Allow: /
 
-# Location of XML sitemap
-Sitemap: https://xerv.ai/crayon/sitemap.xml
+# Location of XML sitemaps
+Sitemap: https://xerv-crayon.pages.dev/sitemap.xml
+Sitemap: https://xerv-crayon.netlify.app/sitemap.xml

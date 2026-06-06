@@ -124,4 +124,5 @@ Evaluated on commodity AMD64 CPU hardware with a standard 68.4 KB test corpus:
 * **GPU Stress Workload ( Tesla T4 GPU):** Evaluated at 107.16 MiB/s on CPU and 1.22M tokens/s on CUDA for 100M characters without sequence truncation errors.
 
 ---
-*For interactive playground testing, visit the official production demo sandbox at [https://crayon.streamlit.app/](https://crayon.streamlit.app/)*
+* **Production Sandbox Demo:** Visit the official interactive playground at [https://crayon.streamlit.app/](https://crayon.streamlit.app/)
+* **Static Deployment Mirror Hubs:** [Cloudflare Pages Mirror](https://xerv-crayon.pages.dev/) | [Netlify Mirror](https://xerv-crayon.netlify.app/) (optimized strictly for static HTML and SEO processing)
