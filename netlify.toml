@@ -1,31 +1,6 @@
-# ==============================================================================
-# NETLIFY DEPLOYMENT CONFIGURATION: XERV CRAYON STATIC SEO PORTAL
-# ==============================================================================
-# NOTE: This deployment is strictly configured to process and serve static HTML,
-# XML sitemap, robots specifications, and LLM content discovery texts.
-# It does not run Python benchmarks, compile C++ extension binaries, or load 
-# CUDA/HIP libraries locally. Dynamic tokenization requests are handled by 
-# forwarding requests to the Streamlit app.
-# ==============================================================================
+# Root netlify.toml
+# Directs Netlify to use the static_site directory as the base context
+# to bypass root dependency installation (requirements.txt, pyproject.toml)
 
 [build]
-  publish = "."
-  # No build command is required, output a deploy log confirmation
-  command = "echo 'Initializing Static HTML & SEO Content Discovery Deploy...'"
-
-# Define SPA-style route redirection to handle direct navigation links cleanly
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
-  force = false
-
-# Add caching headers to optimize load times for assets and schemas
-[[headers]]
-  for = "/*"
-  [headers.values]
-    X-Frame-Options = "DENY"
-    X-XSS-Protection = "1; mode=block"
-    X-Content-Type-Options = "nosniff"
-    Referrer-Policy = "strict-origin-when-cross-origin"
-    Cache-Control = "public, max-age=86400"
+  base = "static_site"

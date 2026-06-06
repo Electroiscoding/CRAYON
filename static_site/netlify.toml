@@ -1,0 +1,21 @@
+# Netlify Configuration inside static_site
+# publishing the current static_site directory, configuring headers and redirects
+
+[build]
+  publish = "."
+  command = "echo 'Deploying static SEO and HTML assets from static_site subdirectory...'"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+  force = false
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-XSS-Protection = "1; mode=block"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Cache-Control = "public, max-age=86400"
