@@ -1,0 +1,323 @@
+\documentclass[10pt,journal,compsoc]{IEEEtran}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage{listings}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{url}
+
+% Setup listings for code snippets
+\lstset{
+    language=C++,
+    basicstyle=\ttfamily\scriptsize,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{gray},
+    stringstyle=\color{red},
+    breaklines=true,
+    frame=single,
+    captionpos=b,
+    numbers=left,
+    numberstyle=\tiny\color{gray}
+}
+
+\begin{document}
+
+\title{CRAYON: Hardware-Accelerated BPE Tokenization via Zero-Copy Double-Array Tries and SIMD Vectorization}
+
+\author{Soham~Pal\\
+\normalsize Xerv Research \& Engineering Division\\
+\normalsize \texttt{botmaker583@gmail.com}}
+
+\IEEEtitleabstractindextext{
+\begin{abstract}
+Subword tokenization is a critical preprocessing gate in Large Language Model (LLM) inference and training pipelines. Traditional tokenizers rely on pointer-heavy trie structures or dynamic hash tables, introducing severe memory fragmentation, high pointer-chasing latencies, and significant cold-start loading overheads. This paper presents CRAYON, a systems-first BPE tokenization framework that represents vocabulary matching using memory-aligned Double-Array Tries (DAT). CRAYON achieves zero-copy, sub-millisecond vocabulary swaps via operating system memory mapping (\texttt{mmap}). To optimize inference, CRAYON integrates an optimistic AVX2 SIMD scanning pathway that processes 32-byte ASCII blocks in a single instruction cycle, bypassing UTF-8 validation overhead when safe. For massive parallel batch processing, CRAYON introduces a GPU-accelerated parallel lookup engine in CUDA and ROCm/HIP, bypassing thread-wide lock contention through dynamic batch capacity planning. Furthermore, CRAYON implements a mathematically exact greedy BPE training algorithm optimized via a parallel-array linked list, an inverted occurrence index, and a lazy max-heap priority queue. Empirical evaluation demonstrates that CRAYON achieves CPU throughput exceeding 18.4 million tokens/sec on standard benchmarks, outperforming Rust-based implementations by up to 35$\times$, while maintaining a cold-start initialization latency of only 0.54\,ms.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Subword Tokenization, Double-Array Trie, SIMD Vectorization, Zero-Copy, CUDA, ROCm, Systems Architecture.
+\end{IEEEkeywords}}
+
+\maketitle
+
+\section{Introduction}
+\IEEEPARstart{T}{he} runtime efficiency of Large Language Models (LLMs) is typically measured in terms of generation tokens per second. However, the preprocessing pipeline, specifically subword tokenization, represents a significant CPU bottleneck during high-throughput training and distributed inference. Tokenization translates raw, unstructured text sequences into discrete integer token identifiers matching a vocabulary. Despite its simplicity, tokenization is memory-bound, demanding massive data ingestion rates across irregular memory hierarchies.
+
+Existing state-of-the-art tokenizers, such as Hugging Face Tokenizers and Rust-based \texttt{tiktoken}, compile subword vocabularies into nested pointer-based prefix trees (Tries) or dynamic hash tables. When executing tokenization at scale, these structures present several distinct systems-level inefficiencies:
+\begin{enumerate}
+    \item \textbf{Cache Locality Degradation:} Navigating pointer-heavy tree nodes results in frequent CPU L2/L3 cache misses. Each subword character comparison requires dereferencing heap addresses, forcing the CPU memory controller to perform random address translation and page walks.
+    \item \textbf{High Cold-Start Latency:} Serialization formats like JSON require parsing large string dictionaries at runtime. This causes initialization delays of up to 1,200\,ms to 2,100\,ms, which is unacceptable in serverless or edge execution environments.
+    \item \textbf{Inflexible Profile Swapping:} Dynamic multi-domain LLMs frequently swap vocabulary profiles (e.g., code-specialized vocabularies vs. multilingual vocabularies). Rebuilding or reloading standard tokenizers in-memory introduces prohibitive system pauses.
+\end{enumerate}
+
+To resolve these limitations, we introduce CRAYON (Cartridge-based Rapid Assembly and Optimization Network). CRAYON shifts the vocabulary representation paradigm from dynamic graph-based structures to a rigid, memory-aligned \textbf{Double-Array Trie (DAT)} format. Originally proposed by Aoe~\cite{aoe1989efficient}, we optimize the DAT layout specifically for modern cache lines, memory-mapped file I/O, and vector registers.
+
+CRAYON represents vocabulary search pathways using three parallel, cache-contiguous integer arrays: \texttt{BASE}, \texttt{CHECK}, and \texttt{VALUES}. Under this formulation, state transitions require only simple array lookups at deterministic offset addresses. Vocabulary profiles are packaged as binary files, which we refer to as \textbf{Cartridges}, and mapped directly to the process's virtual address space using the operating system's \texttt{mmap} system call. This bypasses heap allocations and file parsing, achieving a cold-start load time of 0.54\,ms.
+
+Furthermore, CRAYON introduces a dual-pathway CPU inference loop. Using AVX2 vector registers, the engine optimistically scans 32-byte chunks of text in a single instruction cycle to confirm ASCII status. When verified, the loop executes a branchless transition sequence that bypasses UTF-8 multibyte boundary checks. For batch GPU workloads, CRAYON maps documents parallelly across CUDA and ROCm/HIP threads. To avoid memory exhaustion under extreme workloads, we implement a dynamic memory allocation model based on safety ceiling projections.
+
+This paper makes the following contributions:
+\begin{itemize}
+    \item We design a memory-aligned, zero-copy Double-Array Trie serialization binary format optimized for rapid startup.
+    \item We implement an optimistic AVX2 SIMD ASCII scanner that achieves up to 43.9 million tokens/sec on UTF-8 text streams.
+    \item We build a dynamic batch-capacity GPU engine in CUDA and HIP that prevents silent sequence truncation while avoiding out-of-memory errors.
+    \item We present a mathematically exact, single-core BPE training algorithm using a cache-localized tri-structure representation.
+\end{itemize}
+
+\section{Double-Array Trie Representation and Layout}
+A prefix tree (trie) representing a vocabulary is compiled by CRAYON into three parallel, contiguous, cache-aligned integer arrays: \texttt{BASE}, \texttt{CHECK}, and \texttt{VALUES}.
+
+\subsection{State Transition Formulation}
+Let $s$ be the current parent state index within the DAT. Given an input byte value $c \in [0, 255]$, the target child state index $t$ is calculated via:
+\begin{equation}
+t = \text{BASE}[s] + c
+\end{equation}
+To confirm that state $t$ is indeed a child of $s$, we verify the node ancestry:
+\begin{equation}
+\text{CHECK}[t] == s
+\end{equation}
+If the validation holds, the transition to state $t$ is committed. If $\text{CHECK}[t] \neq s$, the transition is invalid, representing a mismatch. In this case, the engine backtracks to the last valid token match encountered. The associated vocabulary token identifier for state $t$ is fetched via:
+\begin{equation}
+\text{TokenID} = \text{VALUES}[t]
+\end{equation}
+If $\text{VALUES}[t] == -1$, the node represents an intermediate prefix matching path rather than a terminal vocabulary entry.
+
+\subsection{Binary Cartridge Layout}
+CRAYON serializes these compiled arrays to disk as a binary cartridge with a strict, memory-aligned header structure:
+\begin{itemize}
+    \item \textbf{Header Block (12 bytes):}
+    \begin{itemize}
+        \item \texttt{Bytes 0--3:} Magic bytes \texttt{0x59415243} (representing ``CRAY'' in little-endian).
+        \item \texttt{Bytes 4--7:} Version identifier integer (currently version 2).
+        \item \texttt{Bytes 8--11:} Total number of nodes, $N$.
+    \end{itemize}
+    \item \textbf{Data Section:}
+    \begin{itemize}
+        \item \texttt{Bytes 12 to 12 + 4N:} \texttt{BASE} Array ($N \times \text{int32}$).
+        \item \texttt{Bytes 12 + 4N to 12 + 8N:} \texttt{CHECK} Array ($N \times \text{int32}$).
+        \item \texttt{Bytes 12 + 8N to 12 + 12N:} \texttt{VALUES} Array ($N \times \text{int32}$).
+    \end{itemize}
+\end{itemize}
+By aligning the binary file exactly to the in-memory array representation, the system loading procedure is simplified to mapping the file descriptor directly to a memory address.
+
+\section{DAT Construction via First-Fit Packing}
+Compiling a prefix tree containing $V$ subword tokens into a flat DAT layout requires solving a dense packing problem. For each parent node, we must find a base offset value $b$ in the flat array such that the child nodes computed via $b + c_i$ do not collide with any previously claimed array slots.
+
+\subsection{First-Fit Linear Scan}
+The CRAYON compiler (\texttt{compiler.cpp}) utilizes a First-Fit Linear Scan to locate empty array indices. The procedure is formalised in Algorithm~\ref{alg:first_fit}.
+
+\begin{algorithm}[H]
+\caption{First-Fit DAT Array Packing}
+\label{alg:first_fit}
+\begin{algorithmic}[1]
+\REQUIRE Trie node $P$ with child bytes $C = \{c_1, c_2, \dots, c_k\}$
+\ENSURE Base offset $b$ mapped to $P$, and child slots claimed in $\text{CHECK}$
+\STATE $b \leftarrow 1$
+\STATE $collision \leftarrow \text{TRUE}$
+\WHILE{$collision == \text{TRUE}$}
+    \STATE $collision \leftarrow \text{FALSE}$
+    \FOR{each $c_i \in C$}
+        \IF{$\text{CHECK}[b + c_i] \neq -1$}
+            \STATE $collision \leftarrow \text{TRUE}$
+            \STATE \textbf{break}
+        \ENDIF
+    \ENDFOR
+    \IF{$collision == \text{TRUE}$}
+        \STATE $b \leftarrow b + 1$
+    \ENDIF
+\ENDWHILE
+\STATE $\text{BASE}[P] \leftarrow b$
+\FOR{each $c_i \in C$}
+    \STATE $\text{CHECK}[b + c_i] \leftarrow P$
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+As the DAT arrays grow, finding collision-free offsets can trigger quadratic search latencies. To mitigate compile-time degradation, the C++ compiler scales the vectors dynamically in chunks of 512 integers and caches the last-scanned free offset. By writing this routine in native C++ and releasing the Python Global Interpreter Lock (GIL) during compilation loops, CRAYON achieves a $\sim$500$\times$ build speedup over Python-based trie packers, compiling a 206k vocabulary in under 100\,ms.
+
+\section{Hardware-Aligned Inference Engines}
+To maximize ingestion performance, CRAYON bypasses high-level runtime interpreters, interacting directly with CPU and GPU registers.
+
+\subsection{CPU Vectorized Ingestion via AVX2}
+Many production tokenization strings consist primarily of standard ASCII sequences (e.g., code syntax, English prose). CRAYON exploits this using a dual-pathway execution model in \texttt{cpu_engine.cpp}. 
+
+An inline function scans 32 bytes of text in a single CPU cycle using AVX2 SIMD intrinsics to check the most significant bit of each character:
+\begin{lstlisting}[caption={AVX2 SIMD ASCII Verification}]
+inline int is_ascii_32_avx2(const char* ptr) {
+    __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ptr));
+    int mask = _mm256_movemask_epi8(chunk);
+    return mask == 0;
+}
+\end{lstlisting}
+If the returned mask is zero, the engine enters the \textit{Fast-Path} loop. This loop bypasses multi-byte UTF-8 boundary validation, allowing the C++ compiler to unroll the transition loops aggressively. If the mask is non-zero, the engine falls back to the \textit{Safe UTF-8} verification loop.
+
+\subsection{NVIDIA CUDA Backend Parallelization}
+For batch workloads, processing documents sequentially on the CPU limits overall model utilization. The CRAYON CUDA engine (\texttt{gpu_engine_cuda.cu}) parallelizes tokenization by assigning each document in a batch to an individual GPU thread.
+
+To eliminate thread synchronization barriers, the compiled DAT arrays (\texttt{BASE}, \texttt{CHECK}, and \texttt{VALUES}) are copied to the global memory of the GPU device. The CUDA kernel processes text streams linearly with a thread lookahead limit of 128 characters:
+\begin{lstlisting}[caption={CUDA Ingestion Kernels}]
+__global__ void tokenize_kernel(const char* text_pool, const int* offsets, const int* base, const int* check, const int* values, int* out_tokens, int* out_lengths, int num_docs, int safety_ceiling) {
+    int doc_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (doc_idx >= num_docs) return;
+
+    int start = offsets[doc_idx];
+    int end = offsets[doc_idx + 1];
+    int out_offset = doc_idx * safety_ceiling;
+
+    int pos = start;
+    int write_idx = 0;
+    while (pos < end && write_idx < safety_ceiling - 1) {
+        int curr = 0;
+        int best_token = -1;
+        int best_len = 0;
+        for (int i = 0; pos + i < end && i < 128; ++i) {
+            unsigned char c = (unsigned char)text_pool[pos + i];
+            int next = base[curr] + c;
+            if (next >= 0 && check[next] == curr) {
+                curr = next;
+                if (values[curr] != -1) {
+                    best_token = values[curr];
+                    best_len = i + 1;
+                }
+            } else {
+                break;
+            }
+        }
+        if (best_token != -1) {
+            out_tokens[out_offset + write_idx] = best_token;
+            pos += best_len;
+        } else {
+            // Unk token fallback
+            out_tokens[out_offset + write_idx] = 0;
+            pos += 1;
+        }
+        write_idx++;
+    }
+    out_lengths[doc_idx] = write_idx;
+}
+\end{lstlisting}
+
+\subsection{Memory Safety Ceiling and Truncation Resolution}
+Early GPU tokenization models enforced a static limit of 4,096 tokens per document. On large documents, this resulted in silent truncation and data loss. CRAYON resolves this by calculating a dynamic allocation ceiling before launching the GPU kernel. 
+
+Let the batch contain $B$ documents, where $L_i$ represents the character length of document $i$. The dynamic safety capacity per document, $S$, is defined as:
+\begin{equation}
+S = \max_{i} (L_i) + 64
+\end{equation}
+To prevent GPU Out-of-Memory (OOM) failures under massive batch workloads, CRAYON enforces a safety ceiling based on a maximum memory budget allocation of $5.12 \times 10^8$ elements ($\sim$2\,GB of VRAM). If the aggregate allocation $B \times S$ exceeds this budget, the batch is partitioned and processed sequentially.
+
+\subsection{AMD ROCm/HIP Backend}
+The AMD ROCm engine (\texttt{rocm_engine.hip}) maps CUDA intrinsics directly to the HIP runtime environment. By utilizing \texttt{hipcc} compilation directives inside \texttt{setup.py}, CRAYON generates specialized \texttt{crayon_rocm} extensions on AMD hardware, avoiding vendor lock-in.
+
+\section{Algorithmic Deep Dive: Hyper-Fast BPE Trainer}
+Training subword vocabularies on large text corpora requires resolving frequent BPE merge candidates. Naive BPE training algorithms scale poorly ($\mathcal{O}(N^2)$), running full-text scans to count token frequencies after each merge step. CRAYON (\texttt{trainer.cpp}) introduces a single-core BPE trainer optimized via three data structures.
+
+\subsection{Parallel Array Linked List}
+To maintain cache locality, the training corpus is represented as four parallel, contiguous integer arrays of length $N$ (where $N$ is the number of characters in the training text):
+\begin{itemize}
+    \item \texttt{tokens}: Stores the active subword token ID at index $i$.
+    \item \texttt{prev_pos}: Stores the pointer index to the previous active subword.
+    \item \texttt{next_pos}: Stores the pointer index to the next active subword.
+    \item \texttt{active}: A boolean tracking if index $i$ has been merged.
+\end{itemize}
+Merging adjacent tokens at position $i$ and $j = \text{next_pos}[i]$ is simplified to a constant-time pointer rearrangement, avoiding heap reallocation:
+\begin{lstlisting}[caption={Linked List Pointer Adjustments}]
+next_pos[i] = next_pos[j];
+if (next_pos[j] != -1) {
+    prev_pos[next_pos[j]] = i;
+}
+active[j] = false;
+\end{lstlisting}
+
+\subsection{Inverted Indexing}
+CRAYON maintains an inverted index hash map, \texttt{pair_locations}, which maps unique subword token pairs $(T_A, T_B)$ to a vector of index locations where the pair occurs. The hash key is computed using Knuth's multiplicative hash:
+\begin{equation}
+H(T_A, T_B) = (T_A \times 31) + T_B
+\end{equation}
+This index allows the trainer to navigate directly to merge candidate sites without scanning the corpus.
+
+\subsection{Lazy Max-Heap}
+A priority queue stores pair frequencies to track the next merge candidate. When adjacent merges alter the occurrence count of neighboring pairs, the trainer does not update their elements inside the heap, avoiding expensive heap rebalancing operations. Instead, it performs a ``lazy'' skip: when a candidate is popped from the heap, its count is verified against the true count stored in the inverted index. If they mismatch, the entry is discarded in $\mathcal{O}(1)$ time.
+
+The total training complexity is reduced to:
+\begin{equation}
+\mathcal{O}(N + M \cdot K_{\text{avg}} \cdot \log H)
+\end{equation}
+where $M$ is the target number of merge operations, $K_{\text{avg}}$ is the average occurrence count of merged pairs, and $H$ is the heap size.
+
+\section{Concurrency and Memory Management}
+To prevent GC pauses and thread lock contention, CRAYON integrates several memory abstractions.
+
+\subsection{Zero-Copy Memory Mapping}
+CRAYON loads the compiled binary cartridge into memory using the OS page cache (\texttt{mmap} and Python's \texttt{Py_buffer} protocol).
+Because the file representation matches the in-memory array layout, the operating system maps virtual addresses directly to the physical storage blocks. The OS lazily pages data blocks into RAM only when traversed by index lookups, reducing cold-start load times to $0.54$\,ms.
+
+\subsection{Lock-Free Optimistic Caching}
+To prevent thread contention, each worker thread is assigned a private 2048-entry L1 cache (\texttt{cache.py}). 
+Reads inspect a version counter before and after copying keys/values to identify concurrent writes, avoiding mutex lock contention and cache-line false-sharing without introducing write locks.
+
+\section{Empirical Evaluation}
+We evaluate CRAYON against state-of-the-art tokenizers under standardized CPU and GPU environments.
+
+\subsection{CPU Throughput Comparison}
+Throughput benchmarks were recorded on commodity x86\_64 hardware across four domains using a 68.4\,KB text corpus.
+
+\begin{table}[h]
+\centering
+\caption{Throughput Performance (Tokens per Second)}
+\label{tab:throughput}
+\begin{tabular}{lrrrr}
+\toprule
+Tokenizer & English & Code & Unicode & Mixed \\
+\midrule
+\textbf{Crayon (\textit{lite}, 50k)} & \textbf{18,407,951} & \textbf{33,161,787} & \textbf{43,921,330} & \textbf{24,589,766} \\
+\textbf{Crayon (\textit{standard}, 206k)} & \textbf{17,154,914} & \textbf{18,707,550} & \textbf{29,227,498} & \textbf{17,394,245} \\
+tiktoken (\texttt{cl100k_base}) & 1,198,631 & 916,869 & 1,696,065 & 1,066,657 \\
+HF GPT-2 Tokenizer & 237,117 & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+CRAYON's CPU engine outperforms Rust-based \texttt{tiktoken} by up to 35$\times$, particularly on code syntax and Unicode documents which benefit from the AVX2 fast-path and cache-aligned memory layout.
+
+\subsection{Extreme Stress Test}
+To test memory stability under high loads, we evaluated CRAYON on a 95.37\,MiB corpus ($\sim$100 million characters) in a Google Colab T4 GPU environment:
+
+\begin{table}[h]
+\centering
+\caption{Extreme Stress Test Performance}
+\label{tab:stress}
+\begin{tabular}{lrrr}
+\toprule
+Device & Total Tokens & Time (s) & Throughput (Tokens/s) \\
+\midrule
+CPU & 21,212,115 & 0.8899 & 23.84 M \\
+CUDA & 21,212,115 & 17.3300 & 1.22 M \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The test completed successfully without memory leaks, OOM events, or truncation failures, validating the dynamic capacity scheduling implementation.
+
+\section{Related Work}
+Modern subword tokenizers build on byte-level variations of BPE and WordPiece. While highly optimized, Hugging Face Tokenizers and \texttt{tiktoken} compile vocabularies into dynamic pointer-heavy graphs that incur high address translation overheads.
+
+Double-Array Tries (DAT), first designed by Aoe~\cite{aoe1989efficient}, provide constant-time search states but have historically been restricted to static dictionaries due to complex compilation requirements. CRAYON bridges this gap by combining efficient packing compilers with SIMD-accelerated inference engines, optimizing the DAT format for modern LLM ingestion pipelines.
+
+\section{Conclusion}
+We presented CRAYON, a systems-first tokenization framework that utilizes memory-aligned Double-Array Tries, zero-copy memory mapping, and SIMD vectorization. CRAYON eliminates initialization delays, achieves high-throughput subword mapping, and operates efficiently within modern cache line hierarchies. By optimizing for physical memory layouts and processor instructions, CRAYON establishes a high-performance blueprint for large-scale AI data ingestion.
+
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{1}
+
+\bibitem{aoe1989efficient}
+J.~Aoe, ``An efficient digital search algorithm by using a double-array structure,'' \emph{IEEE Transactions on Software Engineering}, vol.~15, no.~9, pp. 1066--1077, 1989.
+
+\end{thebibliography}
+
+\end{document}
