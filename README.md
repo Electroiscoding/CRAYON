@@ -209,3 +209,19 @@ CUDA         | 21,212,115         | 17.3300         | 5.50 MiB/s        | 1.22 M
 *Note on the CUDA/ROCm Truncation Bug:*
 - **Root Cause**: The GPU backends ([gpu_engine_cuda.cu](src/crayon/c_ext/gpu_engine_cuda.cu) and [rocm_engine.hip](src/crayon/c_ext/rocm_engine.hip)) calculated the output buffer token capacity per sequence based on the batch average sentence length, but enforced a strict hardcoded limit of `4096` tokens. Any sequence generating more than 4,096 tokens was silently truncated, leading to data loss on large inputs.
 - **What Changed (Fix)**: The static `4096` cap was replaced with dynamic capacity planning. The engine now determines the maximum sentence length in the batch (`max_len`) and sets sequence capacity to `max_len + 64`. To prevent GPU Out-Of-Memory (OOM) failures under massive batch workloads, it enforces a dynamic safety ceiling based on a total allocation budget of 512M elements (~2 GB). This enables processing massive individual documents safely.
+
+## Citation
+
+If you use CRAYON in your research or applications, please cite it using the following BibTeX entry:
+
+```bibtex
+@misc{pal2026crayon,
+  author       = {Pal, Soham},
+  title        = {{CRAYON: Hardware-Accelerated BPE Tokenization via Zero-Copy Double-Array Tries and SIMD Vectorization}},
+  month        = jun,
+  year         = 2026,
+  publisher    = {Xerv Research \& Engineering Division},
+  doi          = {10.5281/zenodo.20761376},
+  url          = {https://doi.org/10.5281/zenodo.20761376}
+}
+```

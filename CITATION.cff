@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: Pal
+    given-names: Soham
+title: "CRAYON: Hardware-Accelerated BPE Tokenization via Zero-Copy Double-Array Tries and SIMD Vectorization"
+version: 2.0.0
+doi: 10.5281/zenodo.20761376
+date-released: 2026-06-19
+url: "https://github.com/Xerv-Org/CRAYON"
