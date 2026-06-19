@@ -11,6 +11,7 @@
 \usepackage{graphicx}
 \usepackage{hyperref}
 \usepackage{url}
+\usepackage{xcolor}
 
 % Setup listings for code snippets
 \lstset{
@@ -144,7 +145,7 @@ As the DAT arrays grow, finding collision-free offsets can trigger quadratic sea
 To maximize ingestion performance, CRAYON bypasses high-level runtime interpreters, interacting directly with CPU and GPU registers.
 
 \subsection{CPU Vectorized Ingestion via AVX2}
-Many production tokenization strings consist primarily of standard ASCII sequences (e.g., code syntax, English prose). CRAYON exploits this using a dual-pathway execution model in \texttt{cpu_engine.cpp}. 
+Many production tokenization strings consist primarily of standard ASCII sequences (e.g., code syntax, English prose). CRAYON exploits this using a dual-pathway execution model in \texttt{cpu\_engine.cpp}. 
 
 An inline function scans 32 bytes of text in a single CPU cycle using AVX2 SIMD intrinsics to check the most significant bit of each character:
 \begin{lstlisting}[caption={AVX2 SIMD ASCII Verification}]
@@ -157,7 +158,7 @@ inline int is_ascii_32_avx2(const char* ptr) {
 If the returned mask is zero, the engine enters the \textit{Fast-Path} loop. This loop bypasses multi-byte UTF-8 boundary validation, allowing the C++ compiler to unroll the transition loops aggressively. If the mask is non-zero, the engine falls back to the \textit{Safe UTF-8} verification loop.
 
 \subsection{NVIDIA CUDA Backend Parallelization}
-For batch workloads, processing documents sequentially on the CPU limits overall model utilization. The CRAYON CUDA engine (\texttt{gpu_engine_cuda.cu}) parallelizes tokenization by assigning each document in a batch to an individual GPU thread.
+For batch workloads, processing documents sequentially on the CPU limits overall model utilization. The CRAYON CUDA engine (\texttt{gpu\_engine\_cuda.cu}) parallelizes tokenization by assigning each document in a batch to an individual GPU thread.
 
 To eliminate thread synchronization barriers, the compiled DAT arrays (\texttt{BASE}, \texttt{CHECK}, and \texttt{VALUES}) are copied to the global memory of the GPU device. The CUDA kernel processes text streams linearly with a thread lookahead limit of 128 characters:
 \begin{lstlisting}[caption={CUDA Ingestion Kernels}]
@@ -212,7 +213,7 @@ S = \max_{i} (L_i) + 64
 To prevent GPU Out-of-Memory (OOM) failures under massive batch workloads, CRAYON enforces a safety ceiling based on a maximum memory budget allocation of $5.12 \times 10^8$ elements ($\sim$2\,GB of VRAM). If the aggregate allocation $B \times S$ exceeds this budget, the batch is partitioned and processed sequentially.
 
 \subsection{AMD ROCm/HIP Backend}
-The AMD ROCm engine (\texttt{rocm_engine.hip}) maps CUDA intrinsics directly to the HIP runtime environment. By utilizing \texttt{hipcc} compilation directives inside \texttt{setup.py}, CRAYON generates specialized \texttt{crayon_rocm} extensions on AMD hardware, avoiding vendor lock-in.
+The AMD ROCm engine (\texttt{rocm\_engine.hip}) maps CUDA intrinsics directly to the HIP runtime environment. By utilizing \texttt{hipcc} compilation directives inside \texttt{setup.py}, CRAYON generates specialized \texttt{crayon\_rocm} extensions on AMD hardware, avoiding vendor lock-in.
 
 \section{Algorithmic Deep Dive: Hyper-Fast BPE Trainer}
 Training subword vocabularies on large text corpora requires resolving frequent BPE merge candidates. Naive BPE training algorithms scale poorly ($\mathcal{O}(N^2)$), running full-text scans to count token frequencies after each merge step. CRAYON (\texttt{trainer.cpp}) introduces a single-core BPE trainer optimized via three data structures.
@@ -221,11 +222,11 @@ Training subword vocabularies on large text corpora requires resolving frequent 
 To maintain cache locality, the training corpus is represented as four parallel, contiguous integer arrays of length $N$ (where $N$ is the number of characters in the training text):
 \begin{itemize}
     \item \texttt{tokens}: Stores the active subword token ID at index $i$.
-    \item \texttt{prev_pos}: Stores the pointer index to the previous active subword.
-    \item \texttt{next_pos}: Stores the pointer index to the next active subword.
+    \item \texttt{prev\_pos}: Stores the pointer index to the previous active subword.
+    \item \texttt{next\_pos}: Stores the pointer index to the next active subword.
     \item \texttt{active}: A boolean tracking if index $i$ has been merged.
 \end{itemize}
-Merging adjacent tokens at position $i$ and $j = \text{next_pos}[i]$ is simplified to a constant-time pointer rearrangement, avoiding heap reallocation:
+Merging adjacent tokens at position $i$ and $j = \text{next\_pos}[i]$ is simplified to a constant-time pointer rearrangement, avoiding heap reallocation:
 \begin{lstlisting}[caption={Linked List Pointer Adjustments}]
 next_pos[i] = next_pos[j];
 if (next_pos[j] != -1) {
@@ -235,7 +236,7 @@ active[j] = false;
 \end{lstlisting}
 
 \subsection{Inverted Indexing}
-CRAYON maintains an inverted index hash map, \texttt{pair_locations}, which maps unique subword token pairs $(T_A, T_B)$ to a vector of index locations where the pair occurs. The hash key is computed using Knuth's multiplicative hash:
+CRAYON maintains an inverted index hash map, \texttt{pair\_locations}, which maps unique subword token pairs $(T_A, T_B)$ to a vector of index locations where the pair occurs. The hash key is computed using Knuth's multiplicative hash:
 \begin{equation}
 H(T_A, T_B) = (T_A \times 31) + T_B
 \end{equation}
@@ -277,7 +278,7 @@ Tokenizer & English & Code & Unicode & Mixed \\
 \midrule
 \textbf{Crayon (\textit{lite}, 50k)} & \textbf{18,407,951} & \textbf{33,161,787} & \textbf{43,921,330} & \textbf{24,589,766} \\
 \textbf{Crayon (\textit{standard}, 206k)} & \textbf{17,154,914} & \textbf{18,707,550} & \textbf{29,227,498} & \textbf{17,394,245} \\
-tiktoken (\texttt{cl100k_base}) & 1,198,631 & 916,869 & 1,696,065 & 1,066,657 \\
+tiktoken (\texttt{cl100k\_base}) & 1,198,631 & 916,869 & 1,696,065 & 1,066,657 \\
 HF GPT-2 Tokenizer & 237,117 & -- & -- & -- \\
 \bottomrule
 \end{tabular}
