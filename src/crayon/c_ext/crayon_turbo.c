@@ -59,13 +59,14 @@
 /* ══════════════════════════════════════════════════════════════
  *  Word Cache Entry
  * ══════════════════════════════════════════════════════════════ */
-#define WORD_CACHE_SIZE (1u << 13)   /* 8K entries = 96KB — best L2/L3 balance */
+#define WORD_CACHE_SIZE (1u << 13)   /* 8K entries = 128KB — best L2/L3 balance */
 #define WORD_CACHE_MASK (WORD_CACHE_SIZE - 1)
 
 typedef struct {
     uint64_t key;      /* hash with len embedded in top 8 bits */
-    int32_t  tok_id;   /* -2=multi, -1=unused, >=0=single token */
-} WCEntry;  /* 12 bytes, 5 entries per cache line */
+    int32_t  tok_id;   /* -2=multi, -1=unused, >=0=first token ID */
+    int32_t  tok_id2;  /* -1=none, >=0=second token ID */
+} WCEntry;  /* 16 bytes: 64-bit aligned, exactly 4 entries per 64-byte cache line */
 
 /* ══════════════════════════════════════════════════════════════
  *  Global DAT State
@@ -127,12 +128,32 @@ static void _build_byte_lut(void) {
 #define MAX_PAR_THREADS 16
 static WCEntry *g_par_wc[MAX_PAR_THREADS];
 
+static void _init_wc(WCEntry *wc) {
+    for (size_t i = 0; i < WORD_CACHE_SIZE; ++i) {
+        wc[i].key = 0;
+        wc[i].tok_id = -1;
+        wc[i].tok_id2 = -1;
+    }
+}
+
 static void _ensure_par_caches(void) {
     for (int i = 0; i < MAX_PAR_THREADS; ++i) {
         if (!g_par_wc[i]) {
-            g_par_wc[i] = (WCEntry *)calloc(WORD_CACHE_SIZE, sizeof(WCEntry));
+            g_par_wc[i] = (WCEntry *)malloc(WORD_CACHE_SIZE * sizeof(WCEntry));
+            _init_wc(g_par_wc[i]);
         }
     }
+}
+
+static __thread WCEntry g_tl_wc[WORD_CACHE_SIZE];
+static __thread int     g_tl_init = 0;
+
+static void _clear_par_caches(void) {
+    for (int i = 0; i < MAX_PAR_THREADS; ++i) {
+        if (g_par_wc[i]) _init_wc(g_par_wc[i]);
+    }
+    _init_wc(g_tl_wc);
+    g_tl_init = 1;
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -380,20 +401,32 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
                     if (__builtin_expect(ce->key == key, 1)) {
                         if (ce->tok_id >= 0) {
                             FAST_PUSH(ce->tok_id);
+                            if (ce->tok_id2 >= 0) { FAST_PUSH(ce->tok_id2); }
                             FUSE_SEPARATOR
                             continue;
                         }
                         if (ce->tok_id == -2) goto slow_short;
                     }
 slow_short:;
-                    { size_t we=ws+wl, wp=ws; int32_t ft=-1; int cnt=0;
-                      while (wp<we) {
-                        int32_t tid; int ml=dat_match(text,we,wp,&tid);
-                        if (ml>0) { FAST_PUSH(tid); if(!cnt)ft=tid; cnt++; wp+=ml; }
-                        else      { FAST_PUSH(UNK_ID); cnt++; wp++; }
-                      }
-                      ce->key=key; ce->tok_id=(cnt==1)?ft:-2;
-                      if (cnt==1) { FUSE_SEPARATOR }
+                    {
+                        size_t we = ws + wl, wp = ws;
+                        int32_t t1 = -1, t2 = -1; int cnt = 0;
+                        while (wp < we) {
+                            int32_t tid; int ml = dat_match(text, we, wp, &tid);
+                            if (ml > 0) {
+                                FAST_PUSH(tid);
+                                if (cnt == 0) t1 = tid; else if (cnt == 1) t2 = tid;
+                                cnt++; wp += ml;
+                            } else {
+                                FAST_PUSH(UNK_ID);
+                                if (cnt == 0) t1 = UNK_ID; else if (cnt == 1) t2 = UNK_ID;
+                                cnt++; wp++;
+                            }
+                        }
+                        ce->key = key;
+                        if (cnt == 1)      { ce->tok_id = t1; ce->tok_id2 = -1; FUSE_SEPARATOR }
+                        else if (cnt == 2) { ce->tok_id = t1; ce->tok_id2 = t2; FUSE_SEPARATOR }
+                        else             { ce->tok_id = -2; ce->tok_id2 = -1; }
                     }
                 }
 
@@ -402,43 +435,56 @@ slow_short:;
                 size_t we = find_nonword(text, ws + 8, len);
                 wl = we - ws; pos = we;
                 if (wl <= MAX_WORD_LEN) {
-                    key = word_key(text+ws, wl);
+                    key = word_key(text + ws, wl);
                     uint32_t sl = (uint32_t)(key & WORD_CACHE_MASK);
                     WCEntry *ce = &wc[sl];
                     if (__builtin_expect(ce->key == key, 1)) {
                         if (ce->tok_id >= 0) {
                             FAST_PUSH(ce->tok_id);
+                            if (ce->tok_id2 >= 0) { FAST_PUSH(ce->tok_id2); }
                             FUSE_SEPARATOR
                             continue;
                         }
                         if (ce->tok_id == -2) goto slow_long;
                     }
 slow_long:;
-                    { size_t wp=ws; int32_t ft=-1; int cnt=0;
-                      while (wp<we) {
-                        int32_t tid; int ml=dat_match(text,we,wp,&tid);
-                        if (ml>0) { tb_push(out,tid); if(!cnt)ft=tid; cnt++; wp+=ml; }
-                        else      { tb_push(out,UNK_ID); cnt++; wp++; }
-                      }
-                      ce->key=key; ce->tok_id=(cnt==1)?ft:-2;
-                      if (cnt==1) { FUSE_SEPARATOR }
+                    {
+                        size_t wp = ws;
+                        int32_t t1 = -1, t2 = -1; int cnt = 0;
+                        while (wp < we) {
+                            int32_t tid; int ml = dat_match(text, we, wp, &tid);
+                            if (ml > 0) {
+                                FAST_PUSH(tid);
+                                if (cnt == 0) t1 = tid; else if (cnt == 1) t2 = tid;
+                                cnt++; wp += ml;
+                            } else {
+                                FAST_PUSH(UNK_ID);
+                                if (cnt == 0) t1 = UNK_ID; else if (cnt == 1) t2 = UNK_ID;
+                                cnt++; wp++;
+                            }
+                        }
+                        ce->key = key;
+                        if (cnt == 1)      { ce->tok_id = t1; ce->tok_id2 = -1; FUSE_SEPARATOR }
+                        else if (cnt == 2) { ce->tok_id = t1; ce->tok_id2 = t2; FUSE_SEPARATOR }
+                        else             { ce->tok_id = -2; ce->tok_id2 = -1; }
                     }
                 } else {
-                    size_t wp=ws;
-                    while (wp<we) {
-                        int32_t tid; int ml=dat_match(text,we,wp,&tid);
-                        if (ml>0) { tb_push(out,tid); wp+=ml; }
-                        else      { tb_push(out,UNK_ID); wp++; }
+                    size_t wp = ws;
+                    while (wp < we) {
+                        int32_t tid; int ml = dat_match(text, we, wp, &tid);
+                        if (ml > 0) { FAST_PUSH(tid); wp += ml; }
+                        else        { FAST_PUSH(UNK_ID); wp++; }
                     }
                 }
             }
+
 
         } else {
             /* ── Non-word run ── */
             int32_t lt0 = blut[c0];
             pos++;
             if (__builtin_expect(lt0 >= 0, 1)) {
-                tb_push(out, lt0);
+                FAST_PUSH(lt0);
                 /* Peek ahead: if next is word char, skip run-consuming loop */
                 if (__builtin_expect(pos < len, 1)) {
                     uint8_t c1 = text[pos];
@@ -449,16 +495,16 @@ slow_long:;
                     uint8_t cx = text[pos];
                     if (isw_lut[cx]) break;
                     int32_t ltx = blut[cx];
-                    if (__builtin_expect(ltx >= 0, 1)) { tb_push(out, ltx); pos++; }
+                    if (__builtin_expect(ltx >= 0, 1)) { FAST_PUSH(ltx); pos++; }
                     else {
                         size_t ne = find_word(text, pos, len);
                         for (size_t wp=pos; wp<ne; ) {
                             ltx = blut[(uint8_t)text[wp]];
-                            if (__builtin_expect(ltx>=0,1)) { tb_push(out,ltx); wp++; }
+                            if (__builtin_expect(ltx>=0,1)) { FAST_PUSH(ltx); wp++; }
                             else {
                                 int32_t tid; int ml=dat_match(text,ne,wp,&tid);
-                                if (ml>0) { tb_push(out,tid); wp+=ml; }
-                                else      { tb_push(out,UNK_ID); wp++; }
+                                if (ml>0) { FAST_PUSH(tid); wp+=ml; }
+                                else      { FAST_PUSH(UNK_ID); wp++; }
                             }
                         }
                         pos = ne; break;
@@ -469,11 +515,11 @@ slow_long:;
                 size_t ne = find_word(text, pos-1, len);
                 for (size_t wp=pos-1; wp<ne; ) {
                     int32_t lt = blut[(uint8_t)text[wp]];
-                    if (__builtin_expect(lt>=0,1)) { tb_push(out,lt); wp++; }
+                    if (__builtin_expect(lt>=0,1)) { FAST_PUSH(lt); wp++; }
                     else {
                         int32_t tid; int ml=dat_match(text,ne,wp,&tid);
-                        if (ml>0) { tb_push(out,tid); wp+=ml; }
-                        else      { tb_push(out,UNK_ID); wp++; }
+                        if (ml>0) { FAST_PUSH(tid); wp+=ml; }
+                        else      { FAST_PUSH(UNK_ID); wp++; }
                     }
                 }
                 pos = ne;
@@ -481,7 +527,12 @@ slow_long:;
         }
     }
 #undef FUSE_SEPARATOR
+#undef FAST_PUSH
+    out->d = obase;
+    out->cap = ocap;
+    out->n = (size_t)(op - obase);
 }
+
 
 
 /* ══════════════════════════════════════════════════════════════
@@ -565,10 +616,8 @@ static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
     }
 #endif
     /* Serial path */
-    static __thread WCEntry tl_wc[WORD_CACHE_SIZE];
-    static __thread int     tl_init = 0;
-    if (!tl_init) { memset(tl_wc, 0, sizeof(tl_wc)); tl_init = 1; }
-    tokenize_one((const uint8_t*)text, len, result, tl_wc);
+    if (!g_tl_init) { _init_wc(g_tl_wc); g_tl_init = 1; }
+    tokenize_one((const uint8_t*)text, len, result, g_tl_wc);
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -598,6 +647,7 @@ static PyObject *py_load_dat(PyObject *self, PyObject *args) {
     g_size   =sz;
     _build_byte_lut();
     _build_isword();
+    _clear_par_caches();
 
     int32_t maxv=0;
     for (uint32_t i=0;i<sz;++i) if (g_values[i]>maxv) maxv=g_values[i];

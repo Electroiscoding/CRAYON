@@ -44,7 +44,7 @@ Environment Variables:
 
 from __future__ import annotations
 
-__version__ = "5.5.1"
+__version__ = "5.5.2"
 __author__ = "Xerv Research Engineering Division"
 
 # ============================================================================
