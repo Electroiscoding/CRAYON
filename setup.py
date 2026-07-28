@@ -13,7 +13,7 @@ import subprocess
 from setuptools import setup, find_packages, Extension
 from setuptools.command.build_ext import build_ext
 
-VERSION = "5.3.8"
+VERSION = "5.4.0"
 
 class CustomBuildExt(build_ext):
     """Custom build extension with CUDA support and fallback for missing compilers"""
@@ -124,6 +124,57 @@ def get_extensions():
         )
         extensions.append(cpu_ext)
     
+    # TURBO ENGINE (Ultra-fast C engine with OpenMP + word cache)
+    turbo_src = os.path.join(c_ext_dir, "crayon_turbo.c")
+    if os.path.exists(turbo_src):
+        if platform.system() == 'Windows':
+            turbo_args = ['/O2', '/W3', '/wd4244', '/wd4267', '/openmp']
+            turbo_link_args = []
+        else:
+            turbo_args = ['-O3', '-fPIC', '-Wall', '-Wno-unused-function',
+                          '-ffast-math', '-funroll-loops',
+                          '-march=haswell', '-mtune=generic',
+                          '-pipe']
+            turbo_link_args = []
+            if platform.machine() in ('x86_64', 'AMD64'):
+                turbo_args.extend(['-mavx2', '-mfma'])
+            # Try OpenMP
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ['gcc', '-fopenmp', '-E', '-x', 'c', '/dev/null'],
+                    capture_output=True, timeout=5
+                )
+                if result.returncode == 0:
+                    turbo_args.append('-fopenmp')
+                    turbo_link_args.append('-fopenmp')
+                    print("Turbo engine: OpenMP enabled")
+                else:
+                    print("Turbo engine: OpenMP not available, using single-thread")
+            except Exception:
+                print("Turbo engine: OpenMP detection failed, using single-thread")
+        
+        # Get numpy include path for the C API
+        try:
+            import numpy as np
+            numpy_inc = np.get_include()
+            turbo_inc = [c_ext_dir, numpy_inc]
+            print(f"Turbo engine: numpy include = {numpy_inc}")
+        except ImportError:
+            turbo_inc = [c_ext_dir]
+            print("Turbo engine: numpy not found — numpy output disabled")
+        
+        turbo_ext = Extension(
+            'crayon.c_ext.crayon_turbo',
+            sources=[turbo_src],
+            include_dirs=turbo_inc,
+            extra_compile_args=turbo_args,
+            extra_link_args=turbo_link_args,
+            language='c'
+        )
+        extensions.append(turbo_ext)
+        print(f"Turbo engine configured: {turbo_src}")
+    
     # CUDA EXTENSION (Linux only - requires nvcc)
     if platform.system() != 'Windows':
         cuda_home = os.environ.get('CUDA_HOME') or os.environ.get('CUDA_PATH')
@@ -163,7 +214,7 @@ setup(
     long_description_content_type="text/markdown",
     packages=find_packages("src"),
     package_dir={"": "src"},
-    python_requires=">=3.8,<3.14",
+    python_requires=">=3.8",
     install_requires=["numpy>=1.21.0"],
     ext_modules=extensions,
     cmdclass={'build_ext': CustomBuildExt},

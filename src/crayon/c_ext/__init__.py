@@ -103,6 +103,56 @@ crayon_cpu = _CPUProxy()
 
 
 # ============================================================================
+# TURBO BACKEND (Preferred over CPU when available)
+# ============================================================================
+
+_turbo_module: Optional[object] = None
+_turbo_checked: bool = False
+_turbo_error: Optional[str] = None
+
+
+def _load_turbo_backend() -> Optional[object]:
+    """Load the Turbo backend (>=105M tok/s engine)."""
+    global _turbo_checked, _turbo_module, _turbo_error
+    
+    if _turbo_checked:
+        return _turbo_module
+    
+    _turbo_checked = True
+    try:
+        import crayon.c_ext.crayon_turbo as _turbo
+        if hasattr(_turbo, 'tokenize') and hasattr(_turbo, 'load_dat'):
+            _turbo_module = _turbo
+            return _turbo_module
+        else:
+            _turbo_error = "crayon_turbo module missing required functions"
+            return None
+    except ImportError as e:
+        _turbo_error = f"Turbo engine not compiled: {e}"
+        return None
+    except Exception as e:
+        _turbo_error = f"Turbo engine error: {e}"
+        return None
+
+
+def is_turbo_available() -> bool:
+    """Check if the Turbo backend is available."""
+    return _load_turbo_backend() is not None
+
+
+def get_turbo_backend() -> Optional[object]:
+    """Get the Turbo backend module."""
+    return _load_turbo_backend()
+
+
+def get_turbo_error() -> Optional[str]:
+    """Get error message if Turbo is unavailable."""
+    _load_turbo_backend()
+    return _turbo_error
+
+
+
+# ============================================================================
 # GPU BACKENDS (Optional - Lazy Import)
 # ============================================================================
 

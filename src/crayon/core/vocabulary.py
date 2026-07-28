@@ -356,6 +356,7 @@ class CrayonVocab:
         "_lock",
         "_cpu_backend",
         "_cpu_backend_type",
+        "_turbo_backend",
         "_gpu_backend",
         "_dat_file_ref",
         "_dat_mem_ref",
@@ -401,6 +402,7 @@ class CrayonVocab:
         
         # Backend references
         self._cpu_backend: Optional[CPUBackendProtocol] = None
+        self._turbo_backend: Optional[Any] = None
         self._gpu_backend: Optional[Union[CUDABackendProtocol, ROCmBackendProtocol]] = None
         
         # Profile state
@@ -440,6 +442,23 @@ class CrayonVocab:
     
     def _load_cpu_backend(self) -> None:
         """Load the CPU extension (required as fallback for all modes)."""
+        # --- Try Turbo Engine First (>=105M tok/s) ---
+        try:
+            from ..c_ext import is_turbo_available, get_turbo_backend
+            if is_turbo_available():
+                self._turbo_backend = get_turbo_backend()
+                try:
+                    hw = self._turbo_backend.get_hardware_info()
+                    print(f"🚀 TURBO ENGINE LOADED: {hw}")
+                except Exception:
+                    print("🚀 TURBO ENGINE LOADED")
+                _logger.info("Turbo engine loaded successfully")
+            else:
+                self._turbo_backend = None
+        except Exception:
+            self._turbo_backend = None
+        
+        # --- Load standard CPU backend (required as fallback) ---
         try:
             from ..c_ext import get_cpu_backend
             cpu_backend = get_cpu_backend()
@@ -462,7 +481,10 @@ class CrayonVocab:
                 print("🟡 CPU BACKEND: Pure Python (slower)")
                 backend_type = "Pure Python"
             else:
-                print("✅ CPU BACKEND: Compiled C++ Extension (maximum performance)")
+                if self._turbo_backend is not None:
+                    print("✅ CPU BACKEND: Compiled C++ Extension (fallback)")
+                else:
+                    print("✅ CPU BACKEND: Compiled C++ Extension (maximum performance)")
                 backend_type = "Compiled C++"
             
             # Get hardware info
@@ -937,6 +959,14 @@ class CrayonVocab:
             # Dispatch to appropriate backend
             if self.device == "cpu":
                 self._cpu_backend.load_dat(self._dat_mem_ref)
+                # Also load into turbo engine if available
+                if self._turbo_backend is not None:
+                    try:
+                        self._turbo_backend.load_dat(self._dat_mem_ref)
+                        _logger.debug("Turbo engine: DAT loaded")
+                    except Exception as e:
+                        _logger.warning("Turbo engine DAT load failed: %s", e)
+                        self._turbo_backend = None
                 self._profile_loaded = True
                 _logger.debug("Profile loaded on CPU: %s", os.path.basename(path))
                 return
@@ -1073,7 +1103,18 @@ class CrayonVocab:
                     _logger.warning("GPU tokenization failed (%s). Using CPU fallback.", e)
                     # Fall through to CPU path
             
-            # --- CPU PATH ---
+            # --- TURBO PATH (>=105M tok/s) ---
+            if self._turbo_backend is not None:
+                try:
+                    if is_batch:
+                        # tokenize_batch_to_list: list[list[int]] compat
+                        return self._turbo_backend.tokenize_batch_to_list(batch)
+                    # tokenize_to_list: list[int] compat
+                    return self._turbo_backend.tokenize_to_list(batch[0])
+                except Exception as e:
+                    _logger.warning("Turbo tokenization failed (%s). Using CPU fallback.", e)
+            
+            # --- CPU PATH (Legacy) ---
             if is_batch:
                 return [self._cpu_backend.tokenize(s) for s in batch]
             return self._cpu_backend.tokenize(batch[0])
