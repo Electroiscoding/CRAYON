@@ -124,7 +124,7 @@ static void _build_byte_lut(void) {
 }
 
 /* ── Global per-OMP-thread word caches (allocated once, never freed) */
-#define MAX_PAR_THREADS 8
+#define MAX_PAR_THREADS 16
 static WCEntry *g_par_wc[MAX_PAR_THREADS];
 
 static void _ensure_par_caches(void) {
@@ -294,13 +294,14 @@ static inline void tb_push(TBuf * restrict b, int32_t v) {
 }
 static inline void tb_free(TBuf *b) { free(b->d); b->d=NULL; b->n=b->cap=0; }
 static void tb_concat(TBuf *dst, TBuf *src) {
-    if (!src->n) return;
     size_t need = dst->n + src->n;
     if (need > dst->cap) {
-        while (dst->cap < need) dst->cap *= 2;
-        dst->d = (int32_t *)realloc(dst->d, dst->cap * 4);
+        while (dst->cap < need) dst->cap = dst->cap ? dst->cap * 2 : 1024;
+        dst->d = (int32_t *)realloc(dst->d, dst->cap * sizeof(int32_t));
     }
-    memcpy(dst->d + dst->n, src->d, src->n * 4);
+    if (src->n > 0 && src->d) {
+        memcpy(dst->d + dst->n, src->d, src->n * sizeof(int32_t));
+    }
     dst->n = need;
     tb_free(src);
 }
