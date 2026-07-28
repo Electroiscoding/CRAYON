@@ -13,7 +13,7 @@ import subprocess
 from setuptools import setup, find_packages, Extension
 from setuptools.command.build_ext import build_ext
 
-VERSION = "5.4.1"
+VERSION = "5.4.2"
 
 class CustomBuildExt(build_ext):
     """Custom build extension with CUDA support and fallback for missing compilers"""
@@ -132,9 +132,7 @@ def get_extensions():
             turbo_link_args = []
         else:
             turbo_args = ['-O3', '-fPIC', '-Wall', '-Wno-unused-function',
-                          '-ffast-math', '-funroll-loops',
-                          '-march=haswell', '-mtune=generic',
-                          '-pipe']
+                          '-ffast-math', '-funroll-loops']
             turbo_link_args = []
             if platform.machine() in ('x86_64', 'AMD64'):
                 turbo_args.extend(['-mavx2', '-mfma'])
@@ -215,6 +213,7 @@ setup(
     packages=find_packages("src"),
     package_dir={"": "src"},
     python_requires=">=3.8",
+    setup_requires=["numpy>=1.21.0"],
     install_requires=["numpy>=1.21.0"],
     ext_modules=extensions,
     cmdclass={'build_ext': CustomBuildExt},

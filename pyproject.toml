@@ -1,10 +1,11 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=68.0", "wheel", "numpy>=1.21.0"]
+
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "xerv-crayon"
-version = "5.4.1"
+version = "5.4.2"
 description = "Omni-Backend Tokenizer - CPU (AVX2/512), CUDA (NVIDIA), ROCm (AMD) with automatic hardware detection"
 readme = "README.md"
 requires-python = ">=3.8"
