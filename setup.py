@@ -136,21 +136,9 @@ def get_extensions():
             turbo_link_args = []
             if platform.machine() in ('x86_64', 'AMD64'):
                 turbo_args.extend(['-mavx2', '-mfma'])
-            # Try OpenMP
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ['gcc', '-fopenmp', '-E', '-x', 'c', '/dev/null'],
-                    capture_output=True, timeout=5
-                )
-                if result.returncode == 0:
-                    turbo_args.append('-fopenmp')
-                    turbo_link_args.append('-fopenmp')
-                    print("Turbo engine: OpenMP enabled")
-                else:
-                    print("Turbo engine: OpenMP not available, using single-thread")
-            except Exception:
-                print("Turbo engine: OpenMP detection failed, using single-thread")
+            if platform.system() != 'Darwin':
+                turbo_args.append('-fopenmp')
+                turbo_link_args.append('-fopenmp')
         
         # Get numpy include path for the C API
         try:
@@ -205,7 +193,7 @@ else:
 
 setup(
     name="xerv-crayon",
-    version=VERSION,
+    version="5.5.0",
     author="Xerv Research Engineering Division",
     description="Omni-Backend Tokenizer - CPU (AVX2/512), CUDA (NVIDIA), ROCm (AMD)",
     long_description=open("README.md", encoding="utf-8").read(),

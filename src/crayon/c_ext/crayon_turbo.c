@@ -330,7 +330,7 @@ static inline int dat_match(const uint8_t * restrict t, size_t end, size_t pos,
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Core Tokenize Loop  (v5.2 — table-driven isword)
+ *  Core Tokenize Loop  (v5.4 — Branchless SWAR + Register Output)
  * ══════════════════════════════════════════════════════════════ */
 static void tokenize_one(const uint8_t * restrict text, size_t len,
                           TBuf * restrict out, WCEntry * restrict wc) {
@@ -338,14 +338,27 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
     const int32_t * restrict blut = g_byte_lut;
     const uint8_t * restrict isw_lut = g_isword;
 
-    /* FUSE_SEPARATOR: consume trailing single-LUT separator (space/comma etc) inline. */
-#define FUSE_SEPARATOR \
-    if (__builtin_expect(pos < len, 1)) { \
-        uint8_t _nc = text[pos]; \
-        if (!isw_lut[_nc]) { \
-            int32_t _lt = blut[_nc]; \
-            if (__builtin_expect(_lt >= 0, 1)) { tb_push(out, _lt); pos++; } \
+    int32_t * restrict obase = out->d;
+    size_t ocap = out->cap;
+    int32_t * restrict op = obase + out->n;
+
+#define FAST_PUSH(val) do { \
+        size_t on = (size_t)(op - obase); \
+        if (__builtin_expect(on >= ocap, 0)) { \
+            ocap = ocap ? ocap * 2 : 1024; \
+            obase = (int32_t*)realloc(obase, ocap * 4); \
+            op = obase + on; \
         } \
+        *op++ = (val); \
+    } while(0)
+
+#define FUSE_SEPARATOR \
+    while (__builtin_expect(pos < len, 1)) { \
+        uint8_t _nc = text[pos]; \
+        if (isw_lut[_nc]) break; \
+        int32_t _lt = blut[_nc]; \
+        if (__builtin_expect(_lt >= 0, 1)) { FAST_PUSH(_lt); pos++; } \
+        else break; \
     }
 
     while (pos < len) {
@@ -365,7 +378,7 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
                     WCEntry *ce = &wc[sl];
                     if (__builtin_expect(ce->key == key, 1)) {
                         if (ce->tok_id >= 0) {
-                            tb_push(out, ce->tok_id);
+                            FAST_PUSH(ce->tok_id);
                             FUSE_SEPARATOR
                             continue;
                         }
@@ -375,8 +388,8 @@ slow_short:;
                     { size_t we=ws+wl, wp=ws; int32_t ft=-1; int cnt=0;
                       while (wp<we) {
                         int32_t tid; int ml=dat_match(text,we,wp,&tid);
-                        if (ml>0) { tb_push(out,tid); if(!cnt)ft=tid; cnt++; wp+=ml; }
-                        else      { tb_push(out,UNK_ID); cnt++; wp++; }
+                        if (ml>0) { FAST_PUSH(tid); if(!cnt)ft=tid; cnt++; wp+=ml; }
+                        else      { FAST_PUSH(UNK_ID); cnt++; wp++; }
                       }
                       ce->key=key; ce->tok_id=(cnt==1)?ft:-2;
                       if (cnt==1) { FUSE_SEPARATOR }
@@ -393,7 +406,7 @@ slow_short:;
                     WCEntry *ce = &wc[sl];
                     if (__builtin_expect(ce->key == key, 1)) {
                         if (ce->tok_id >= 0) {
-                            tb_push(out, ce->tok_id);
+                            FAST_PUSH(ce->tok_id);
                             FUSE_SEPARATOR
                             continue;
                         }
@@ -495,10 +508,10 @@ static PyObject *tb_to_pylist(const TBuf *b) {
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Parallel document split helper
+ *  Parallel document split helper (v5.3 — dynamic OMP threads)
  * ══════════════════════════════════════════════════════════════ */
-#define PAR_THRESHOLD (1<<18)   /* 256KB: OMP split for large docs */
-#define PAR_NTHREADS  2         /* physical cores */
+#define PAR_THRESHOLD (32 * 1024)   /* 32KB: OMP split for large docs */
+#define MAX_PAR_THREADS 16
 
 static size_t split_at_ws(const uint8_t *t, size_t target, size_t len) {
     if (target>=len) return len;
@@ -516,40 +529,44 @@ static size_t split_at_ws(const uint8_t *t, size_t target, size_t len) {
 static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
 #ifdef _OPENMP
     if (len >= PAR_THRESHOLD) {
-        int nt = PAR_NTHREADS;
-        size_t starts[PAR_NTHREADS+1];
-        starts[0]=0;
-        for (int i=1;i<nt;++i)
-            starts[i]=split_at_ws((const uint8_t*)text,(size_t)len*i/nt,len);
-        starts[nt]=len;
+        int max_t = omp_get_max_threads();
+        if (max_t > MAX_PAR_THREADS) max_t = MAX_PAR_THREADS;
+        if (max_t > 1) {
+            int nt = max_t;
+            size_t starts[MAX_PAR_THREADS + 1];
+            starts[0] = 0;
+            for (int i = 1; i < nt; ++i)
+                starts[i] = split_at_ws((const uint8_t*)text, (size_t)len * i / nt, len);
+            starts[nt] = len;
 
-        /* Ensure per-OMP-thread word caches exist */
-        _ensure_par_caches();
+            _ensure_par_caches();
 
-        TBuf chunks[PAR_NTHREADS];
-        for (int i=0;i<nt;++i) chunks[i].d=NULL;
+            TBuf chunks[MAX_PAR_THREADS];
+            for (int i = 0; i < nt; ++i) chunks[i].d = NULL;
 
-        Py_BEGIN_ALLOW_THREADS
+            Py_BEGIN_ALLOW_THREADS
 
-        #pragma omp parallel for num_threads(nt) schedule(static,1)
-        for (int i=0; i<nt; ++i) {
-            int tid = omp_get_thread_num();
-            WCEntry *wc = (g_par_wc[tid]) ? g_par_wc[tid] : g_par_wc[0];
-            size_t s=starts[i], e=starts[i+1];
-            tb_init(&chunks[i], (e-s)/3+64);
-            tokenize_one((const uint8_t*)text+s, e-s, &chunks[i], wc);
+            #pragma omp parallel for num_threads(nt) schedule(static, 1)
+            for (int i = 0; i < nt; ++i) {
+                int tid = omp_get_thread_num();
+                if (tid >= MAX_PAR_THREADS) tid = 0;
+                WCEntry *wc = (g_par_wc[tid]) ? g_par_wc[tid] : g_par_wc[0];
+                size_t s = starts[i], e = starts[i+1];
+                tb_init(&chunks[i], (e - s) / 3 + 64);
+                tokenize_one((const uint8_t*)text + s, e - s, &chunks[i], wc);
+            }
+
+            Py_END_ALLOW_THREADS
+
+            for (int i = 0; i < nt; ++i) tb_concat(result, &chunks[i]);
+            return;
         }
-
-        Py_END_ALLOW_THREADS
-
-        for (int i=0;i<nt;++i) tb_concat(result, &chunks[i]);
-        return;
     }
 #endif
     /* Serial path */
     static __thread WCEntry tl_wc[WORD_CACHE_SIZE];
-    static __thread int     tl_init=0;
-    if (!tl_init) { memset(tl_wc,0,sizeof(tl_wc)); tl_init=1; }
+    static __thread int     tl_init = 0;
+    if (!tl_init) { memset(tl_wc, 0, sizeof(tl_wc)); tl_init = 1; }
     tokenize_one((const uint8_t*)text, len, result, tl_wc);
 }
 
