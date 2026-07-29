@@ -1,9 +1,10 @@
-# Crayon Real-World Colab Benchmark Script (v5.5.2)
-# Run in Google Colab:
-#   !pip install -U xerv-crayon
-#   !python measurecolab.py
-
-import sys, os, time, gc, urllib.request
+import crayon
+print(crayon.__version__)
+import sys
+import time
+import statistics
+import urllib.request
+from typing import List, Tuple, Callable
 
 try:
     from crayon import CrayonVocab
@@ -12,107 +13,178 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "xerv-crayon"])
     from crayon import CrayonVocab
 
-# Fallback diverse text if offline
-DIVERSE_FALLBACK_PROSE = """
-The philosophy of science is a sub-field of philosophy concerned with the foundations, methods, and implications of science.
-The central questions of this study concern what qualifies as science, the reliability of scientific theories, and the ultimate purpose of science.
-Quantum mechanics is a fundamental theory in physics that provides a description of the physical properties of nature at the scale of atoms and subatomic particles.
-It is the foundation of all quantum physics including quantum chemistry, quantum field theory, quantum technology, and quantum information science.
-Classical physics, the collection of theories that existed before the advent of quantum mechanics, describes many aspects of nature at an ordinary (large) scale,
-but is not sufficient for describing them at small (atomic and subatomic) scales. Most theories in classical physics can be derived from quantum mechanics as an approximation.
-""" * 100
+try:
+    import tiktoken
+except ImportError:
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "tiktoken"])
+    import tiktoken
 
-def fetch_real_corpus(filename: str, fallback_text: str) -> str:
-    """Fetch real-world corpus file locally or from GitHub repo."""
-    local_path = os.path.join(os.path.dirname(__file__), "src", "crayon", "resources", filename)
-    if os.path.exists(local_path):
-        try:
-            with open(local_path, "r", encoding="utf-8") as f:
-                content = f.read()
-                if content.strip():
-                    return content
-        except Exception:
-            pass
 
-    url = f"https://raw.githubusercontent.com/Xerv-Org/CRAYON/main/src/crayon/resources/{filename}"
+def fetch_text(url: str, max_bytes: int = 2_500_000) -> str:
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=10) as response:
-            content = response.read().decode('utf-8')
-            if content.strip():
-                return content
-    except Exception:
-        pass
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read(max_bytes + 1024)
+            return data[:max_bytes].decode("utf-8", errors="ignore")
+    except Exception as e:
+        print(f"  Warning: could not fetch {url[:70]}... ({e})")
+        return ""
 
-    return fallback_text
 
-def make_payload(base_text: str, target_bytes: int) -> str:
-    rep = (target_bytes // len(base_text)) + 1
-    return (base_text * rep)[:target_bytes]
+def build_diverse_corpus() -> str:
+    print("Building diverse multi-domain corpus...")
 
-def run_benchmark():
-    print("=" * 85)
-    print("🚀 CRAYON REAL-WORLD BENCHMARK (NON-INFLATED DIVERSE DATASETS)")
-    print("=" * 85)
+    sources = [
+        "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt",
+        "https://www.gutenberg.org/files/1342/1342-0.txt",
+        "https://www.gutenberg.org/files/84/84-0.txt",
+        "https://www.gutenberg.org/files/11/11-0.txt",
+        "https://raw.githubusercontent.com/python/cpython/main/Lib/asyncio/base_events.py",
+        "https://raw.githubusercontent.com/python/cpython/main/Lib/json/__init__.py",
+        "https://raw.githubusercontent.com/torvalds/linux/master/kernel/sched/core.c",
+        "https://raw.githubusercontent.com/golang/go/master/src/runtime/proc.go",
+        "https://raw.githubusercontent.com/deepmind/dm-haiku/main/README.md",
+        "https://raw.githubusercontent.com/pytorch/pytorch/main/README.md",
+        "https://raw.githubusercontent.com/numpy/numpy/main/numpy/core/src/multiarray/multiarraymodule.c",
+        "https://raw.githubusercontent.com/python/cpython/main/Python/ceval.c",
+    ]
+
+    chunks = []
+    for url in sources:
+        text = fetch_text(url, max_bytes=600_000)
+        if text.strip():
+            chunks.append(text)
+            print(f"  + {len(text):,} chars ← {url.split('/')[-1]}")
+
+    if not chunks:
+        base = (
+            "The philosophy of science examines the foundations, methods and implications of science. "
+            "Quantum mechanics describes physical properties at atomic and subatomic scales.\n"
+            "def tokenize(text: str) -> list[int]:\n    return [ord(c) for c in text]\n"
+            "fn main() { println!(\"hello from rust\"); }\n"
+        )
+        chunks = [base * 300]
+
+    corpus = "\n\n".join(chunks)
+    print(f"Final unique corpus size: {len(corpus):,} characters\n")
+    return corpus
+
+
+def make_payload(corpus: str, target_bytes: int) -> str:
+    if target_bytes <= len(corpus):
+        return corpus[:target_bytes]
+    reps = (target_bytes // len(corpus)) + 1
+    return (corpus * reps)[:target_bytes]
+
+
+def time_one_payload(
+    fn: Callable,
+    payload: str,
+    iterations: int,
+) -> Tuple[float, float, List[float], int]:
+    tokens = fn(payload)
+    token_count = len(tokens)
+
+    latencies = []
+    for _ in range(iterations):
+        t0 = time.perf_counter()
+        tokens = fn(payload)
+        t1 = time.perf_counter()
+        latencies.append((t1 - t0) * 1000)
+
+    mean_latency_s = statistics.mean(latencies) / 1000
+    mean_tps = token_count / mean_latency_s
+    mean_mbps = (len(payload.encode("utf-8")) / (1024 * 1024)) / mean_latency_s
+    return mean_tps, mean_mbps, latencies, token_count
+
+
+def print_row(size_name: str, name: str, tps: float, mbps: float,
+              latencies: List[float], tokens: int):
+    mean_lat = statistics.mean(latencies)
+    std_lat = statistics.stdev(latencies) if len(latencies) > 1 else 0.0
+    print(
+        f"| {size_name:<10} | {name:<22} | {tokens:>10,} | "
+        f"{tps/1e6:>8.2f} M | {mbps:>7.1f} | "
+        f"{mean_lat:>7.2f} ± {std_lat:>5.2f} |"
+    )
+
+
+def main():
+    print("=" * 110)
+    print("HONEST CRAYON TURBO BENCHMARK  –  Size Sweep (0.5 KB → 4 MB)")
+    print("Uses vocab.tokenize()  |  minimal repetition  |  GC enabled  |  vs tiktoken")
+    print("=" * 110)
 
     vocab = CrayonVocab(device="auto")
     vocab.load_profile("lite")
-    turbo = vocab._turbo_backend
+    
+    print(f"Device Mode  : {vocab.device}")
+    print(f"Turbo Engine : {vocab._turbo_backend.get_hardware_info() if vocab._turbo_backend else 'N/A'}\n")
 
-    if turbo:
-        print(f"Hardware Info: {turbo.get_hardware_info()}")
-    else:
-        print(f"Backend Device: {vocab.device}")
-
-    print("\nFetching real-world datasets (Prose, Source Code, Scientific Data)...")
-    prose_text = fetch_real_corpus("arts_commerce_corpus.txt", DIVERSE_FALLBACK_PROSE)
-    code_text  = fetch_real_corpus("CRAYON_Full_Codebase.txt", DIVERSE_FALLBACK_PROSE)
-    tech_text  = fetch_real_corpus("science_corpus.txt", DIVERSE_FALLBACK_PROSE)
-
-    domains = [
-        ("Real English Prose", prose_text),
-        ("Real Source Code",   code_text),
-        ("Scientific / Tech",  tech_text)
-    ]
+    corpus = build_diverse_corpus()
 
     sizes = [
-        ("100 KB", 100 * 1024),
-        ("1 MB",   1 * 1024 * 1024),
-        ("4 MB",   4 * 1024 * 1024),
-        ("10 MB",  10 * 1024 * 1024)
+        ("0.5 KB",   512),
+        ("1 KB",    1024),
+        ("2 KB",    2048),
+        ("4 KB",    4096),
+        ("8 KB",    8192),
+        ("16 KB",  16384),
+        ("32 KB",  32768),
+        ("64 KB",  65536),
+        ("128 KB", 131072),
+        ("256 KB", 262144),
+        ("512 KB", 524288),
+        ("1 MB",  1048576),
+        ("2 MB",  2097152),
+        ("4 MB",  4194304),
     ]
 
-    print("\n" + "=" * 85)
-    print(f"| {'Domain':<22} | {'Size':<8} | {'Tokens':<10} | {'Throughput':<14} | {'Latency':<9} | {'Status':<7} |")
-    print("-" * 85)
+    enc = tiktoken.get_encoding("cl100k_base")
 
-    for domain_name, base_text in domains:
-        for size_name, num_bytes in sizes:
-            payload = make_payload(base_text, num_bytes)
-            iterations = 30 if num_bytes < 1000000 else 10
+    def crayon_fn(text: str):
+        return vocab.tokenize(text)
 
-            # Warmup
-            turbo.tokenize(payload)
+    def tiktoken_fn(text: str):
+        return enc.encode(text)
 
-            gc.collect()
-            gc.disable()
-            t0 = time.perf_counter()
-            for _ in range(iterations):
-                tokens = turbo.tokenize(payload)
-            t1 = time.perf_counter()
-            gc.enable()
+    print("-" * 110)
+    print(
+        f"| {'Size':<10} | {'Tokenizer':<22} | {'Tokens':>10} | "
+        f"{'Throughput':>10} | {'MB/s':>7} | {'Latency (ms)':^15} |"
+    )
+    print(
+        f"| {'':<10} | {'':<22} | {'':>10} | "
+        f"{'(M tok/s)':>10} | {'':>7} | {'mean ± std':^15} |"
+    )
+    print("-" * 110)
 
-            elapsed = (t1 - t0) / iterations
-            tps = len(tokens) / elapsed
-            status = "✅ HIGH" if tps >= 105e6 else "ℹ️ REAL"
+    for size_name, num_bytes in sizes:
+        payload = make_payload(corpus, num_bytes)
 
-            print(f"| {domain_name:<22} | {size_name:<8} | {len(tokens):>10,} | {tps/1e6:>10.2f} M tok/s | {elapsed*1000:>6.2f} ms | {status:<7} |")
-        print("-" * 85)
+        iterations = 40 if num_bytes < 32_768 else 12 if num_bytes < 524_288 else 7
 
-    print("\n" + "=" * 85)
-    print("BENCHMARK COMPLETE")
-    print("=" * 85 + "\n")
+        # Crayon Turbo (Clean Public API)
+        tps, mbps, lats, ntok = time_one_payload(crayon_fn, payload, iterations)
+        print_row(size_name, "Crayon Turbo", tps, mbps, lats, ntok)
+
+        # tiktoken
+        tps, mbps, lats, ntok = time_one_payload(tiktoken_fn, payload, iterations)
+        print_row(size_name, "tiktoken cl100k", tps, mbps, lats, ntok)
+
+        print("-" * 110)
+
+    print("\nMethodology notes (honest by design):")
+    print("  • Diverse multi-domain corpus (literature + real C/Python/Go source + technical docs)")
+    print("  • Minimal repetition: only repeats unique corpus when target size > corpus length")
+    print("  • Garbage collector left fully enabled")
+    print("  • Warm-up = one pass only")
+    print("  • More iterations on small sizes for stable statistics")
+    print("  • Same payload fed to both tokenizers")
+    print("  • Official Crayon API: vocab.tokenize(text)")
+    print("=" * 110)
+
 
 if __name__ == "__main__":
-    run_benchmark()
-
+    main()
