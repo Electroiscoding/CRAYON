@@ -241,43 +241,53 @@ static inline size_t scan_short_word(
     uint64_t * restrict out_key, int * restrict is_short)
 {
     size_t remain = len - pos;
-    uint64_t raw = 0;
-
-    if (__builtin_expect(remain >= 8, 1)) {
-        memcpy(&raw, t + pos, 8);
-    } else {
-        memcpy(&raw, t + pos, remain);
-    }
-
     const uint8_t *iw = g_isword;
-    /* Extract bytes from raw — compiler turns these into register shifts */
-    uint8_t b0=(uint8_t)raw, b1=(uint8_t)(raw>>8), b2=(uint8_t)(raw>>16),
-            b3=(uint8_t)(raw>>24), b4=(uint8_t)(raw>>32), b5=(uint8_t)(raw>>40),
-            b6=(uint8_t)(raw>>48), b7=(uint8_t)(raw>>56);
-
-    /* Goto-chain: early exit at first non-word byte.
-     * Branch predictor learns the exit position for each word pattern.
-     * Sentinel at wl=8 so wl is always in [0..8]. */
     int wl = 0;
-    if (!iw[b0]) goto found; wl=1;
-    if (!iw[b1]) goto found; wl=2;
-    if (!iw[b2]) goto found; wl=3;
-    if (!iw[b3]) goto found; wl=4;
-    if (!iw[b4]) goto found; wl=5;
-    if (!iw[b5]) goto found; wl=6;
-    if (!iw[b6]) goto found; wl=7;
-    if (!iw[b7]) goto found; wl=8;
-found:
-    if (wl == 8 && remain > 8 && iw[t[pos+8]]) {
-        *is_short=0; *out_key=0; return 8;
+
+    if (__builtin_expect(remain >= 16, 1)) {
+        uint64_t r1, r2;
+        memcpy(&r1, t + pos, 8);
+        memcpy(&r2, t + pos + 8, 8);
+
+        if (!iw[(uint8_t)r1]) goto found16; wl = 1;
+        if (!iw[(uint8_t)(r1 >> 8)]) goto found16; wl = 2;
+        if (!iw[(uint8_t)(r1 >> 16)]) goto found16; wl = 3;
+        if (!iw[(uint8_t)(r1 >> 24)]) goto found16; wl = 4;
+        if (!iw[(uint8_t)(r1 >> 32)]) goto found16; wl = 5;
+        if (!iw[(uint8_t)(r1 >> 40)]) goto found16; wl = 6;
+        if (!iw[(uint8_t)(r1 >> 48)]) goto found16; wl = 7;
+        if (!iw[(uint8_t)(r1 >> 56)]) goto found16; wl = 8;
+
+        if (!iw[(uint8_t)r2]) goto found16; wl = 9;
+        if (!iw[(uint8_t)(r2 >> 8)]) goto found16; wl = 10;
+        if (!iw[(uint8_t)(r2 >> 16)]) goto found16; wl = 11;
+        if (!iw[(uint8_t)(r2 >> 24)]) goto found16; wl = 12;
+        if (!iw[(uint8_t)(r2 >> 32)]) goto found16; wl = 13;
+        if (!iw[(uint8_t)(r2 >> 40)]) goto found16; wl = 14;
+        if (!iw[(uint8_t)(r2 >> 48)]) goto found16; wl = 15;
+        if (!iw[(uint8_t)(r2 >> 56)]) goto found16; wl = 16;
+found16:
+        if (wl == 16 && remain > 16 && iw[t[pos + 16]]) {
+            *is_short = 0; *out_key = 0; return 16;
+        }
+        *out_key = word_key(t + pos, (size_t)wl);
+        *is_short = 1;
+        return (size_t)wl;
     }
-    static const uint64_t M[9]={
-        0ULL,0xFFULL,0xFFFFULL,0xFFFFFFULL,
-        0xFFFFFFFFULL,0xFFFFFFFFFFULL,0xFFFFFFFFFFFFULL,
-        0xFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL};
-    uint64_t v = raw & M[wl];
-    v ^= (v>>33); v *= 0xff51afd7ed558ccdULL; v ^= (v>>33);
-    *out_key = (v & 0x00FFFFFFFFFFFFFFULL) | ((uint64_t)(wl&0xFF)<<56);
+
+    /* Fallback for remain < 16 bytes */
+    uint64_t raw = 0;
+    memcpy(&raw, t + pos, remain);
+    if (!iw[(uint8_t)raw]) goto found_rem; wl = 1;
+    if (remain > 1 && !iw[(uint8_t)(raw >> 8)]) goto found_rem; if (remain > 1) wl = 2;
+    if (remain > 2 && !iw[(uint8_t)(raw >> 16)]) goto found_rem; if (remain > 2) wl = 3;
+    if (remain > 3 && !iw[(uint8_t)(raw >> 24)]) goto found_rem; if (remain > 3) wl = 4;
+    if (remain > 4 && !iw[(uint8_t)(raw >> 32)]) goto found_rem; if (remain > 4) wl = 5;
+    if (remain > 5 && !iw[(uint8_t)(raw >> 40)]) goto found_rem; if (remain > 5) wl = 6;
+    if (remain > 6 && !iw[(uint8_t)(raw >> 48)]) goto found_rem; if (remain > 6) wl = 7;
+    if (remain > 7 && !iw[(uint8_t)(raw >> 56)]) goto found_rem; if (remain > 7) wl = (int)remain;
+found_rem:
+    *out_key = word_key(t + pos, (size_t)wl);
     *is_short = 1;
     return (size_t)wl;
 }
@@ -909,7 +919,7 @@ static PyObject *py_get_hardware_info(PyObject *self, PyObject *args) {
 #endif
     if (!brand[0]) strcpy(brand,"Unknown CPU");
     char info[320];
-    snprintf(info,sizeof(info),"%s [Turbo/v5.2/SWAR+%s/%s 64Kcache intcache=%u]",
+    snprintf(info,sizeof(info),"%s [Turbo/v5.5.7/SWAR+%s/%s 8K-4Tok-Cache intcache=%u]",
              brand,
 #if HAVE_AVX2
              "AVX2",
