@@ -651,12 +651,10 @@ static PyObject *tb_to_pylist(const TBuf *b) {
 /* ══════════════════════════════════════════════════════════════
  *  Parallel document split helper (v5.5 — 8KB threshold)
  * ══════════════════════════════════════════════════════════════ */
-/* PAR_THRESHOLD: minimum document size to trigger OMP parallel split.
- * Set high (256KB) so that thread spawn overhead is fully amortized.
- * On Colab Xeon (many cores), 256KB/N_cores = big chunks with low overhead.
- * On 2-core laptops, OMP_NUM_THREADS is typically <=2 so max_t<4 guard fires. */
-#define PAR_THRESHOLD (256 * 1024)   /* 256KB: only split genuinely large docs */
-#define PAR_MIN_THREADS 4            /* Require >=4 threads, else serial is faster */
+/* PAR_THRESHOLD: 16KB threshold to trigger OMP parallel split.
+ * Enables dual-core parallelism in Google Colab (2 vCPUs) and multi-core desktops. */
+#define PAR_THRESHOLD (16 * 1024)   /* 16KB: split for all multi-core workloads */
+#define PAR_MIN_THREADS 2            /* Enable OMP on 2+ vCPUs (Google Colab, etc.) */
 
 static size_t split_at_ws(const uint8_t *t, size_t target, size_t len) {
     if (target>=len) return len;
