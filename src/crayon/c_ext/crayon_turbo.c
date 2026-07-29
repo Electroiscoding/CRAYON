@@ -727,7 +727,10 @@ static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
             _ensure_par_caches();
 
             TBuf chunks[MAX_PAR_THREADS];
-            for (int i = 0; i < nt; ++i) chunks[i].d = NULL;
+            for (int i = 0; i < nt; ++i) {
+                size_t chunk_len = starts[i+1] - starts[i];
+                tb_init(&chunks[i], chunk_len + 256);
+            }
 
             Py_BEGIN_ALLOW_THREADS
 
@@ -737,7 +740,6 @@ static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
                 if (tid >= MAX_PAR_THREADS) tid = 0;
                 WCEntry *wc = (g_par_wc[tid]) ? g_par_wc[tid] : g_par_wc[0];
                 size_t s = starts[i], e = starts[i+1];
-                tb_init(&chunks[i], (e - s) / 4 + 64);
                 tokenize_one((const uint8_t*)text + s, e - s, &chunks[i], wc);
             }
 
@@ -938,7 +940,7 @@ static PyObject *py_get_hardware_info(PyObject *self, PyObject *args) {
 #endif
     if (!brand[0]) strcpy(brand,"Unknown CPU");
     char info[320];
-    snprintf(info,sizeof(info),"%s [Turbo/v5.5.8/SWAR+%s/%s 8K-4Tok-Cache intcache=%u]",
+    snprintf(info,sizeof(info),"%s [Turbo/v5.5.9/SWAR+%s/%s 8K-4Tok-Cache intcache=%u]",
              brand,
 #if HAVE_AVX2
              "AVX2",
