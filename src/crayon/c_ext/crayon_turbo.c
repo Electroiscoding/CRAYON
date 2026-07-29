@@ -236,6 +236,31 @@ static void _build_isword(void) {
                        (c>='0'&&c<='9')||c=='_'||c>=0x80) ? 1 : 0;
 }
 
+static inline uint64_t fast_key8(uint64_t r1, size_t wl) {
+    static const uint64_t M[9] = {
+        0ULL, 0xFFULL, 0xFFFFULL, 0xFFFFFFULL,
+        0xFFFFFFFFULL, 0xFFFFFFFFFFULL, 0xFFFFFFFFFFFFULL,
+        0xFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL
+    };
+    uint64_t v = r1 & M[wl];
+    v ^= (v >> 33); v *= 0xff51afd7ed558ccdULL; v ^= (v >> 33);
+    return (v & 0x00FFFFFFFFFFFFFFULL) | ((uint64_t)(wl & 0xFF) << 56);
+}
+
+static inline uint64_t fast_key16(uint64_t r1, uint64_t r2, size_t wl) {
+    static const uint64_t M[9] = {
+        0ULL, 0xFFULL, 0xFFFFULL, 0xFFFFFFULL,
+        0xFFFFFFFFULL, 0xFFFFFFFFFFULL, 0xFFFFFFFFFFFFULL,
+        0xFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL
+    };
+    uint64_t v2 = r2 & M[wl - 8];
+    uint64_t h = 14695981039346656037ULL;
+    h ^= r1; h *= 1099511628211ULL;
+    h ^= v2; h *= 1099511628211ULL;
+    h ^= (h >> 33); h *= 0xff51afd7ed558ccdULL; h ^= (h >> 33);
+    return (h & 0x00FFFFFFFFFFFFFFULL) | ((uint64_t)(wl & 0xFF) << 56);
+}
+
 static inline size_t scan_short_word(
     const uint8_t * restrict t, size_t pos, size_t len,
     uint64_t * restrict out_key, int * restrict is_short)
@@ -243,51 +268,45 @@ static inline size_t scan_short_word(
     size_t remain = len - pos;
     const uint8_t *iw = g_isword;
     int wl = 0;
+    uint64_t r1 = 0, r2 = 0;
 
     if (__builtin_expect(remain >= 16, 1)) {
-        uint64_t r1, r2;
         memcpy(&r1, t + pos, 8);
         memcpy(&r2, t + pos + 8, 8);
-
-        if (!iw[(uint8_t)r1]) goto found16; wl = 1;
-        if (!iw[(uint8_t)(r1 >> 8)]) goto found16; wl = 2;
-        if (!iw[(uint8_t)(r1 >> 16)]) goto found16; wl = 3;
-        if (!iw[(uint8_t)(r1 >> 24)]) goto found16; wl = 4;
-        if (!iw[(uint8_t)(r1 >> 32)]) goto found16; wl = 5;
-        if (!iw[(uint8_t)(r1 >> 40)]) goto found16; wl = 6;
-        if (!iw[(uint8_t)(r1 >> 48)]) goto found16; wl = 7;
-        if (!iw[(uint8_t)(r1 >> 56)]) goto found16; wl = 8;
-
-        if (!iw[(uint8_t)r2]) goto found16; wl = 9;
-        if (!iw[(uint8_t)(r2 >> 8)]) goto found16; wl = 10;
-        if (!iw[(uint8_t)(r2 >> 16)]) goto found16; wl = 11;
-        if (!iw[(uint8_t)(r2 >> 24)]) goto found16; wl = 12;
-        if (!iw[(uint8_t)(r2 >> 32)]) goto found16; wl = 13;
-        if (!iw[(uint8_t)(r2 >> 40)]) goto found16; wl = 14;
-        if (!iw[(uint8_t)(r2 >> 48)]) goto found16; wl = 15;
-        if (!iw[(uint8_t)(r2 >> 56)]) goto found16; wl = 16;
-found16:
-        if (wl == 16 && remain > 16 && iw[t[pos + 16]]) {
-            *is_short = 0; *out_key = 0; return 16;
-        }
-        *out_key = word_key(t + pos, (size_t)wl);
-        *is_short = 1;
-        return (size_t)wl;
+    } else if (remain >= 8) {
+        memcpy(&r1, t + pos, 8);
+        memcpy(&r2, t + pos + 8, remain - 8);
+    } else {
+        memcpy(&r1, t + pos, remain);
     }
 
-    /* Fallback for remain < 16 bytes */
-    uint64_t raw = 0;
-    memcpy(&raw, t + pos, remain);
-    if (!iw[(uint8_t)raw]) goto found_rem; wl = 1;
-    if (remain > 1 && !iw[(uint8_t)(raw >> 8)]) goto found_rem; if (remain > 1) wl = 2;
-    if (remain > 2 && !iw[(uint8_t)(raw >> 16)]) goto found_rem; if (remain > 2) wl = 3;
-    if (remain > 3 && !iw[(uint8_t)(raw >> 24)]) goto found_rem; if (remain > 3) wl = 4;
-    if (remain > 4 && !iw[(uint8_t)(raw >> 32)]) goto found_rem; if (remain > 4) wl = 5;
-    if (remain > 5 && !iw[(uint8_t)(raw >> 40)]) goto found_rem; if (remain > 5) wl = 6;
-    if (remain > 6 && !iw[(uint8_t)(raw >> 48)]) goto found_rem; if (remain > 6) wl = 7;
-    if (remain > 7 && !iw[(uint8_t)(raw >> 56)]) goto found_rem; if (remain > 7) wl = (int)remain;
-found_rem:
-    *out_key = word_key(t + pos, (size_t)wl);
+    if (!iw[(uint8_t)r1]) goto found16; wl = 1;
+    if (!iw[(uint8_t)(r1 >> 8)]) goto found16; wl = 2;
+    if (!iw[(uint8_t)(r1 >> 16)]) goto found16; wl = 3;
+    if (!iw[(uint8_t)(r1 >> 24)]) goto found16; wl = 4;
+    if (!iw[(uint8_t)(r1 >> 32)]) goto found16; wl = 5;
+    if (!iw[(uint8_t)(r1 >> 40)]) goto found16; wl = 6;
+    if (!iw[(uint8_t)(r1 >> 48)]) goto found16; wl = 7;
+    if (!iw[(uint8_t)(r1 >> 56)]) goto found16; wl = 8;
+
+    if (!iw[(uint8_t)r2]) goto found16; wl = 9;
+    if (!iw[(uint8_t)(r2 >> 8)]) goto found16; wl = 10;
+    if (!iw[(uint8_t)(r2 >> 16)]) goto found16; wl = 11;
+    if (!iw[(uint8_t)(r2 >> 24)]) goto found16; wl = 12;
+    if (!iw[(uint8_t)(r2 >> 32)]) goto found16; wl = 13;
+    if (!iw[(uint8_t)(r2 >> 40)]) goto found16; wl = 14;
+    if (!iw[(uint8_t)(r2 >> 48)]) goto found16; wl = 15;
+    if (!iw[(uint8_t)(r2 >> 56)]) goto found16; wl = 16;
+found16:
+    if (wl > (int)remain) wl = (int)remain;
+    if (wl == 16 && remain > 16 && iw[t[pos + 16]]) {
+        *is_short = 0; *out_key = 0; return 16;
+    }
+    if (wl <= 8) {
+        *out_key = fast_key8(r1, (size_t)wl);
+    } else {
+        *out_key = fast_key16(r1, r2, (size_t)wl);
+    }
     *is_short = 1;
     return (size_t)wl;
 }
@@ -671,10 +690,10 @@ static PyObject *tb_to_pylist(const TBuf *b) {
 /* ══════════════════════════════════════════════════════════════
  *  Parallel document split helper (v5.5 — 8KB threshold)
  * ══════════════════════════════════════════════════════════════ */
-/* PAR_THRESHOLD: 16KB threshold to trigger OMP parallel split.
+/* PAR_THRESHOLD: 4KB threshold to trigger OMP parallel split.
  * Enables dual-core parallelism in Google Colab (2 vCPUs) and multi-core desktops. */
-#define PAR_THRESHOLD (16 * 1024)   /* 16KB: split for all multi-core workloads */
-#define PAR_MIN_THREADS 2            /* Enable OMP on 2+ vCPUs (Google Colab, etc.) */
+#define PAR_THRESHOLD (4 * 1024)    /* 4KB: split for all multi-core workloads */
+#define PAR_MIN_THREADS 2           /* Enable OMP on 2+ vCPUs (Google Colab, etc.) */
 
 static size_t split_at_ws(const uint8_t *t, size_t target, size_t len) {
     if (target>=len) return len;
@@ -919,7 +938,7 @@ static PyObject *py_get_hardware_info(PyObject *self, PyObject *args) {
 #endif
     if (!brand[0]) strcpy(brand,"Unknown CPU");
     char info[320];
-    snprintf(info,sizeof(info),"%s [Turbo/v5.5.7/SWAR+%s/%s 8K-4Tok-Cache intcache=%u]",
+    snprintf(info,sizeof(info),"%s [Turbo/v5.5.8/SWAR+%s/%s 8K-4Tok-Cache intcache=%u]",
              brand,
 #if HAVE_AVX2
              "AVX2",

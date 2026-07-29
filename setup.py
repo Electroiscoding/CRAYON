@@ -193,7 +193,7 @@ else:
 
 setup(
     name="xerv-crayon",
-    version="5.5.7",
+    version="5.5.8",
     author="Xerv Research Engineering Division",
     description="Omni-Backend Tokenizer - CPU (AVX2/512), CUDA (NVIDIA), ROCm (AMD)",
     long_description=open("README.md", encoding="utf-8").read(),
