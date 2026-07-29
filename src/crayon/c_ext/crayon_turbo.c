@@ -708,34 +708,38 @@ static size_t split_at_ws(const uint8_t *t, size_t target, size_t len) {
 
 /* Tokenize text with OMP split if large enough, otherwise serial.
  * _ensure_par_caches() is called BEFORE the parallel section to avoid race. */
+#define MAX_PAR_CHUNKS 256
+#define TARGET_MICRO_CHUNK (32 * 1024)   /* 32KB micro-chunks fit in L2 cache */
+
 static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
 #ifdef _OPENMP
     if (len >= PAR_THRESHOLD) {
         int max_t = omp_get_max_threads();
         if (max_t > MAX_PAR_THREADS) max_t = MAX_PAR_THREADS;
-        /* Only parallelize if we have enough real cores to amortize fork overhead.
-         * On 2-core hyperthreaded CPUs, CPU-bound OMP doesn't help and can hurt. */
         if (max_t >= PAR_MIN_THREADS) {
-            int nt = max_t;
-            size_t starts[MAX_PAR_THREADS + 1];
-            starts[0] = 0;
-            for (int i = 1; i < nt; ++i)
-                starts[i] = split_at_ws((const uint8_t*)text, (size_t)len * i / nt, len);
-            starts[nt] = len;
+            int nchunks = (int)((len + TARGET_MICRO_CHUNK - 1) / TARGET_MICRO_CHUNK);
+            if (nchunks < max_t) nchunks = max_t;
+            if (nchunks > MAX_PAR_CHUNKS) nchunks = MAX_PAR_CHUNKS;
 
-            /* Ensure all thread caches exist BEFORE forking (avoid race) */
+            size_t starts[MAX_PAR_CHUNKS + 1];
+            starts[0] = 0;
+            for (int i = 1; i < nchunks; ++i)
+                starts[i] = split_at_ws((const uint8_t*)text, len * (size_t)i / (size_t)nchunks, len);
+            starts[nchunks] = len;
+
+            /* Ensure thread caches exist BEFORE forking (avoid race) */
             _ensure_par_caches();
 
-            TBuf chunks[MAX_PAR_THREADS];
-            for (int i = 0; i < nt; ++i) {
-                size_t chunk_len = starts[i+1] - starts[i];
-                tb_init(&chunks[i], chunk_len + 256);
+            TBuf chunks[MAX_PAR_CHUNKS];
+            for (int i = 0; i < nchunks; ++i) {
+                size_t clen = starts[i+1] - starts[i];
+                tb_init(&chunks[i], clen + 256);
             }
 
             Py_BEGIN_ALLOW_THREADS
 
-            #pragma omp parallel for num_threads(nt) schedule(static, 1)
-            for (int i = 0; i < nt; ++i) {
+            #pragma omp parallel for num_threads(max_t) schedule(dynamic, 1)
+            for (int i = 0; i < nchunks; ++i) {
                 int tid = omp_get_thread_num();
                 if (tid >= MAX_PAR_THREADS) tid = 0;
                 WCEntry *wc = (g_par_wc[tid]) ? g_par_wc[tid] : g_par_wc[0];
@@ -745,7 +749,7 @@ static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
 
             Py_END_ALLOW_THREADS
 
-            for (int i = 0; i < nt; ++i) tb_concat(result, &chunks[i]);
+            for (int i = 0; i < nchunks; ++i) tb_concat(result, &chunks[i]);
             return;
         }
     }
@@ -940,7 +944,7 @@ static PyObject *py_get_hardware_info(PyObject *self, PyObject *args) {
 #endif
     if (!brand[0]) strcpy(brand,"Unknown CPU");
     char info[320];
-    snprintf(info,sizeof(info),"%s [Turbo/v5.5.9/SWAR+%s/%s 8K-4Tok-Cache intcache=%u]",
+    snprintf(info,sizeof(info),"%s [Turbo/v5.6.0/SWAR+%s/%s 32K-MicroChunks intcache=%u]",
              brand,
 #if HAVE_AVX2
              "AVX2",
