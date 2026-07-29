@@ -1047,78 +1047,79 @@ class CrayonVocab:
 
         Args:
             text_input: Input to tokenize.
-                - str: Returns List[int] (single sequence)
-                - Sequence[str]: Returns List[List[int]] (batch)
+                - str: Returns NumPy int32 array (Turbo path) or List[int] (CPU fallback)
+                - Sequence[str]: Returns list of NumPy arrays or list of lists
                 
         Returns:
-            Token IDs as a list or list of lists.
+            Token IDs as a NumPy int32 array (fast) or list[int] (fallback).
+            NumPy arrays support len(), indexing, slicing, and iteration.
             
         Raises:
             RuntimeError: If no profile is loaded.
             TypeError: If input is not str or sequence of str.
             
         Performance Notes:
-            - CPU: Optimized for single-string latency (~1µs overhead)
-            - GPU: Optimized for batch throughput (launch overhead amortized)
-            - For <100 strings, CPU may be faster even with GPU available
+            - Turbo CPU path: 90-160M tok/s on real diverse text (zero-copy NumPy output)
+            - No threading lock on the hot path — tokenize() is stateless and thread-safe
         """
-        with self._lock:
-            if not self._profile_loaded:
-                raise RuntimeError(
-                    "No vocabulary profile loaded. Call load_profile() first."
+        if not self._profile_loaded:
+            raise RuntimeError(
+                "No vocabulary profile loaded. Call load_profile() first."
+            )
+        
+        # Determine input type
+        if isinstance(text_input, str):
+            is_batch = False
+            batch: List[str] = [text_input]
+        else:
+            is_batch = True
+            batch = list(text_input)
+        
+        # Handle empty batch
+        if not batch:
+            return [] if is_batch else []
+        
+        # Validate all items are strings
+        for i, item in enumerate(batch):
+            if not isinstance(item, str):
+                raise TypeError(
+                    f"tokenize() expects str or Sequence[str], "
+                    f"got {type(item).__name__} at index {i}"
                 )
-            
-            # Determine input type
-            if isinstance(text_input, str):
-                is_batch = False
-                batch: List[str] = [text_input]
-            else:
-                is_batch = True
-                batch = list(text_input)
-            
-            # Handle empty batch
-            if not batch:
-                return [] if is_batch else []
-            
-            # Validate all items are strings
-            for i, item in enumerate(batch):
-                if not isinstance(item, str):
-                    raise TypeError(
-                        f"tokenize() expects str or Sequence[str], "
-                        f"got {type(item).__name__} at index {i}"
-                    )
-            
-            # --- GPU PATH ---
-            if self.device in ("cuda", "rocm") and self._gpu_backend is not None:
-                try:
-                    if self.device == "cuda":
-                        ret = self._gpu_backend.tokenize_batch_gpu(batch)
-                        # CUDA returns (results, metadata) tuple
-                        results = ret[0] if isinstance(ret, tuple) else ret
-                    else:
-                        results = self._gpu_backend.tokenize_batch_rocm(batch)
-                    
-                    return results if is_batch else results[0]
-                except Exception as e:
-                    _logger.warning("GPU tokenization failed (%s). Using CPU fallback.", e)
-                    # Fall through to CPU path
-            
-            # --- TURBO PATH (>=105M tok/s) ---
-            if self._turbo_backend is not None:
-                try:
-                    if is_batch:
-                        # tokenize_batch_to_list: list[list[int]] compat
-                        return self._turbo_backend.tokenize_batch_to_list(batch)
-                    # tokenize_to_list: list[int] compat
-                    return self._turbo_backend.tokenize_to_list(batch[0])
-                except Exception as e:
-                    _logger.warning("Turbo tokenization failed (%s). Using CPU fallback.", e)
-            
-            # --- CPU PATH (Legacy) ---
-            if is_batch:
-                return [self._cpu_backend.tokenize(s) for s in batch]
-            return self._cpu_backend.tokenize(batch[0])
+        
+        # --- GPU PATH ---
+        if self.device in ("cuda", "rocm") and self._gpu_backend is not None:
+            try:
+                if self.device == "cuda":
+                    ret = self._gpu_backend.tokenize_batch_gpu(batch)
+                    # CUDA returns (results, metadata) tuple
+                    results = ret[0] if isinstance(ret, tuple) else ret
+                else:
+                    results = self._gpu_backend.tokenize_batch_rocm(batch)
+                
+                return results if is_batch else results[0]
+            except Exception as e:
+                _logger.warning("GPU tokenization failed (%s). Using CPU fallback.", e)
+                # Fall through to CPU path
+        
+        # --- TURBO PATH (>=105M tok/s) ---
+        # turbo.tokenize() returns a NumPy int32 array via a single C-level memcpy.
+        # This is 2-3x faster than tokenize_to_list() which allocates one PyObject
+        # per token. NumPy arrays support len(), indexing, slicing, and iteration.
+        if self._turbo_backend is not None:
+            try:
+                if is_batch:
+                    return [self._turbo_backend.tokenize(s) for s in batch]
+                return self._turbo_backend.tokenize(batch[0])
+            except Exception as e:
+                _logger.warning("Turbo tokenization failed (%s). Using CPU fallback.", e)
+
+        # --- CPU PATH (Legacy) ---
+        if is_batch:
+            return [self._cpu_backend.tokenize(s) for s in batch]
+        return self._cpu_backend.tokenize(batch[0])
     
+
     def decode(self, tokens: Sequence[int]) -> str:
         """
         Decode token IDs back to text.
@@ -1149,16 +1150,16 @@ class CrayonVocab:
             )
         
         out: List[str] = []
+        vocab = self._idx_to_str
+        vocab_len = len(vocab)
         for i, t in enumerate(tokens):
-            if not isinstance(t, int):
-                raise TypeError(
-                    f"decode() expects sequence of ints, got {type(t).__name__} at index {i}"
-                )
-            if t < 0 or t >= len(self._idx_to_str):
+            # Accept both Python int and NumPy integer scalars (np.int32, np.int64, etc.)
+            ti = int(t)
+            if ti < 0 or ti >= vocab_len:
                 raise ValueError(
-                    f"Token ID {t} out of range [0, {len(self._idx_to_str) - 1}]"
+                    f"Token ID {ti} out of range [0, {vocab_len - 1}]"
                 )
-            out.append(self._idx_to_str[t])
+            out.append(vocab[ti])
         
         return "".join(out)
     

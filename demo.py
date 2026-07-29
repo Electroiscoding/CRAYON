@@ -15,8 +15,3 @@ tokenizer.load_profile("lite")
 tokens_lite = tokenizer.tokenize("my daughter")
 print(f"Tokens: {tokens_lite}")
 print(f"Decoded: {tokenizer.decode(tokens_lite)}")
-
-print("\n--- Direct Turbo C Engine (Zero-Copy NumPy Output) ---")
-if tokenizer._turbo_backend:
-    np_tokens = tokenizer._turbo_backend.tokenize("Ultra-fast tokenization with Crayon Turbo")
-    print(f"Direct Turbo Tokens ({type(np_tokens).__name__}): {np_tokens}")
