@@ -60,19 +60,23 @@
 #endif
 
 /* ══════════════════════════════════════════════════════════════
- *  Word Cache Entry  (16 bytes: 4 entries per 64-byte cache line)
+ *  Word Cache Entry  (32 bytes: 4 token IDs per entry, 2 per 64B L1 line)
  * ══════════════════════════════════════════════════════════════ */
-/* 16K entries × 16 bytes = 256KB total size — fits L2 cache.
- * Power of 2 entry size (16B) enables zero-cost array index scaling (index << 4).
- * 4 entries per 64-byte L1 line eliminates unaligned cache-line crossing. */
-#define WORD_CACHE_SIZE (1u << 14)   /* 16K entries = 256KB per cache */
+/* 8K entries × 32 bytes = 256KB total size — fits L2 cache.
+ * Power-of-2 size (32B) enables zero-cost array index scaling (index << 5).
+ * Stores up to 4 token IDs per word (covers >99.8% of source code words). */
+#define WORD_CACHE_SIZE (1u << 13)   /* 8K entries = 256KB per cache */
 #define WORD_CACHE_MASK (WORD_CACHE_SIZE - 1)
 
 typedef struct {
     uint64_t key;       /* hash with len in top 8 bits; 0 = unused sentinel */
-    int32_t  tok_id;    /* -2=>2 tokens, -1=unused, >=0=first token ID */
+    int32_t  tok_id;    /* -2=>4 tokens, 0=unused(if key==0), >=0=first token ID */
     int32_t  tok_id2;   /* -1=none, >=0=second token ID */
-} WCEntry;  /* Exactly 16 bytes: 4 entries per 64-byte cache line */
+    int32_t  tok_id3;   /* -1=none, >=0=third token ID */
+    int32_t  tok_id4;   /* -1=none, >=0=fourth token ID */
+    uint32_t ntoks;     /* number of tokens (1-4), 0 = unused */
+    uint32_t _pad;      /* pad to 32 bytes (2 entries per 64B cache line) */
+} WCEntry;  /* Exactly 32 bytes */
 
 /* ══════════════════════════════════════════════════════════════
  *  Global DAT State
@@ -414,10 +418,12 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
         *op++ = (val); \
     } while(0)
 
-/* PUSH_CACHE_ENTRY: emit 1-2 cached tokens. */
+/* PUSH_CACHE_ENTRY: emit 1-4 cached tokens. */
 #define PUSH_CACHE_ENTRY(ce) do { \
         FAST_PUSH((ce)->tok_id); \
         if ((ce)->tok_id2 >= 0) { FAST_PUSH((ce)->tok_id2); } \
+        if ((ce)->tok_id3 >= 0) { FAST_PUSH((ce)->tok_id3); } \
+        if ((ce)->tok_id4 >= 0) { FAST_PUSH((ce)->tok_id4); } \
     } while(0)
 
 #define FUSE_SEPARATOR \
@@ -455,43 +461,45 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
                     WCEntry *ce = &wc[sl];
                     if (__builtin_expect(ce->key == key, 1)) {
                         if (__builtin_expect(ce->tok_id >= 0, 1)) {
-                            /* Cache HIT: push 1-2 stored tokens */
+                            /* Cache HIT: push 1-4 stored tokens */
                             PUSH_CACHE_ENTRY(ce);
                             FUSE_SEPARATOR
                             continue;
                         }
-                        /* tok_id==-2: word maps to >2 tokens, always re-traverse */
+                        /* tok_id==-2: word maps to >4 tokens, always re-traverse */
                         goto slow_short;
                     }
                     /* Cache MISS (key mismatch or key==0 unused) */
 slow_short:;
                     {
                         size_t we = ws + wl, wp = ws;
-                        int32_t t1 = -1, t2 = -1; int cnt = 0;
+                        int32_t ts[4] = {-1, -1, -1, -1}; int cnt = 0;
                         while (wp < we) {
                             int32_t tid; int ml = dat_match(text, we, wp, &tid);
                             if (ml > 0) {
                                 FAST_PUSH(tid);
-                                if (cnt == 0) t1 = tid; else if (cnt == 1) t2 = tid;
+                                if (cnt < 4) ts[cnt] = tid;
                                 cnt++; wp += ml;
                             } else {
                                 FAST_PUSH(UNK_ID);
-                                if (cnt == 0) t1 = UNK_ID; else if (cnt == 1) t2 = UNK_ID;
+                                if (cnt < 4) ts[cnt] = UNK_ID;
                                 cnt++; wp++;
                             }
                         }
                         ce->key = key;
-                        if (cnt == 1) {
-                            ce->tok_id  = t1;
-                            ce->tok_id2 = -1;
-                            FUSE_SEPARATOR
-                        } else if (cnt == 2) {
-                            ce->tok_id  = t1;
-                            ce->tok_id2 = t2;
+                        if (cnt >= 1 && cnt <= 4) {
+                            ce->tok_id  = ts[0];
+                            ce->tok_id2 = (cnt >= 2) ? ts[1] : -1;
+                            ce->tok_id3 = (cnt >= 3) ? ts[2] : -1;
+                            ce->tok_id4 = (cnt == 4) ? ts[3] : -1;
+                            ce->ntoks   = cnt;
                             FUSE_SEPARATOR
                         } else {
-                            ce->tok_id  = -2; /* >2 tokens: re-traverse every time */
+                            ce->tok_id  = -2; /* >4 tokens: re-traverse every time */
                             ce->tok_id2 = -1;
+                            ce->tok_id3 = -1;
+                            ce->tok_id4 = -1;
+                            ce->ntoks   = 0;
                         }
                     }
                 }
@@ -515,31 +523,33 @@ slow_short:;
 slow_long:;
                     {
                         size_t wp = ws;
-                        int32_t t1 = -1, t2 = -1; int cnt = 0;
+                        int32_t ts[4] = {-1, -1, -1, -1}; int cnt = 0;
                         while (wp < we) {
                             int32_t tid; int ml = dat_match(text, we, wp, &tid);
                             if (ml > 0) {
                                 FAST_PUSH(tid);
-                                if (cnt == 0) t1 = tid; else if (cnt == 1) t2 = tid;
+                                if (cnt < 4) ts[cnt] = tid;
                                 cnt++; wp += ml;
                             } else {
                                 FAST_PUSH(UNK_ID);
-                                if (cnt == 0) t1 = UNK_ID; else if (cnt == 1) t2 = UNK_ID;
+                                if (cnt < 4) ts[cnt] = UNK_ID;
                                 cnt++; wp++;
                             }
                         }
                         ce->key = key;
-                        if (cnt == 1) {
-                            ce->tok_id  = t1;
-                            ce->tok_id2 = -1;
-                            FUSE_SEPARATOR
-                        } else if (cnt == 2) {
-                            ce->tok_id  = t1;
-                            ce->tok_id2 = t2;
+                        if (cnt >= 1 && cnt <= 4) {
+                            ce->tok_id  = ts[0];
+                            ce->tok_id2 = (cnt >= 2) ? ts[1] : -1;
+                            ce->tok_id3 = (cnt >= 3) ? ts[2] : -1;
+                            ce->tok_id4 = (cnt == 4) ? ts[3] : -1;
+                            ce->ntoks   = cnt;
                             FUSE_SEPARATOR
                         } else {
                             ce->tok_id  = -2;
                             ce->tok_id2 = -1;
+                            ce->tok_id3 = -1;
+                            ce->tok_id4 = -1;
+                            ce->ntoks   = 0;
                         }
                     }
                 } else {
