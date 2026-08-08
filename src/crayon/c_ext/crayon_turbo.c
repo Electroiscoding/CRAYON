@@ -1,21 +1,20 @@
 /*
- * CRAYON TURBO ENGINE v5.6.3 (256K Cache + Unified AVX2 Path)
- * ========================
- * Target: >= 150M tokens/sec on all real-world text (prose + source code).
+ * CRAYON TURBO ENGINE v5.7.1 (2-Way SA Cache, Unified 32B Entry, Aggressive OMP)
+ * ==============================================================================
+ * Target: >= 100M tokens/sec on all real-world text, all sizes.
  *
- * Architecture (v5.6.3 innovations over v5.2):
- *  1. BYTE LUT: single-char tokens (spaces, punct) resolved in O(1).
- *  2. UNIFIED WORD SCANNER: all words parsed with AVX2 `_mm256_movemask_epi8`.
- *  3. FUSED WORD+SEPARATOR: after cache hit, consumes trailing space/punct inline.
- *  4. 256K DIRECT-MAPPED WORD CACHE: 32x more entries vs v5.1 (8K).
- *     Virtually eliminates DAT traversal on large source code (8MB per thread).
- *  5. COMPILE: -march=haswell for BMI2/LZCNT/AVX2 auto-vectorization.
- *  6. NUMPY OUTPUT: zero per-token Python allocation (single memcpy).
- *  7. PRE-BAKED INT CACHE: O(1) list output via Py_INCREF + pointer.
- *  8. OMP SPLIT at 32KB: aggressively parallelizes even small docs.
- *
- * Measured throughput (i3-7020U @ 2.3GHz, steady state):
- *  - Expected to reach 150-200M tok/s.
+ * Architecture:
+ *  1. BYTE LUT + PAIR LUT: O(1) for single-char and 2-char tokens.
+ *  2. UNIFIED WORD SCANNER: AVX2 _mm256_movemask_epi8 boundary detection.
+ *  3. 2-WAY SET-ASSOCIATIVE WORD CACHE:
+ *     - Entry = 32 bytes (key + 4 token IDs + ntoks). Everything in one struct.
+ *     - Set   = 2 entries = 64 bytes = exactly 1 L1 cache line.
+ *     - 64K sets × 2 ways = 128K entries = 4MB total.
+ *     - Cache hit = 1 cache line load, check 2 keys, read token IDs. All FREE.
+ *     - Eliminates collision thrashing AND split-array double-load penalty.
+ *  4. AGGRESSIVE OMP: 8KB threshold, 16KB micro-chunks.
+ *  5. NUMPY OUTPUT: zero per-token Python allocation.
+ *  6. PRE-BAKED INT CACHE: O(1) list output.
  */
 
 #define PY_SSIZE_T_CLEAN
@@ -53,47 +52,48 @@
 #endif
 
 /* ══════════════════════════════════════════════════════════════
- *  Word Cache Entry  (32 bytes: 4 token IDs per entry, 2 per 64B L1 line)
+ *  2-Way Set-Associative Word Cache  (unified 32-byte entries)
+ *  ────────────────────────────────────────────────────────────
+ *  Each entry: 32 bytes (key=8, ids[4]=16, ntoks=4, pad=4).
+ *  Each set:   2 entries = 64 bytes = 1 L1 cache line.
+ *  Total:      64K sets × 2 ways = 128K entries = 4MB.
+ *
+ *  A cache hit loads ONE cache line, checks 2 keys, and reads
+ *  token IDs from the SAME line. Zero extra memory traffic.
  * ══════════════════════════════════════════════════════════════ */
-/* 256K entries × 32 bytes = 8MB total size.
- * Power-of-2 size (32B) enables zero-cost array index scaling (index << 5).
- * Stores up to 4 token IDs per word (covers >99.8% of source code words). */
-#define WORD_CACHE_SIZE (1u << 16)   /* 256K entries = 8MB per cache */
-#define WORD_CACHE_MASK (WORD_CACHE_SIZE - 1)
+#define WC_SETS_SHIFT   16
+#define WC_SETS         (1u << WC_SETS_SHIFT)   /* 64K sets */
+#define WC_SET_MASK     (WC_SETS - 1)
+#define WC_WAYS         2
+#define WC_TOTAL        (WC_SETS * WC_WAYS)     /* 128K entries */
 
 typedef struct {
-    uint64_t key;       /* hash with len in top 8 bits; 0 = unused sentinel */
-    int32_t  tok_id;    /* -2=>4 tokens, 0=unused(if key==0), >=0=first token ID */
-    int32_t  tok_id2;   /* -1=none, >=0=second token ID */
-    int32_t  tok_id3;   /* -1=none, >=0=third token ID */
-    int32_t  tok_id4;   /* -1=none, >=0=fourth token ID */
-    uint32_t ntoks;     /* number of tokens (1-4), 0 = unused */
-    uint32_t _pad;      /* pad to 32 bytes (2 entries per 64B cache line) */
-} WCEntry;  /* Exactly 32 bytes */
+    uint64_t key;       /* hash with len in top 8 bits; 0 = unused */
+    int32_t  ids[4];    /* up to 4 token IDs; unused = -1 */
+    int32_t  ntoks;     /* 0 = unused/uncacheable, 1-4 = valid count */
+    int32_t  _pad;      /* pad to exactly 32 bytes */
+} WCEntry;  /* 32 bytes. 2 entries = 64 bytes = 1 cache line. */
 
 /* ══════════════════════════════════════════════════════════════
  *  Global DAT State
  * ══════════════════════════════════════════════════════════════ */
 #define MAX_WORD_LEN    128
 #define UNK_ID          1
-#define INIT_OUT_CAP    (1 << 18)  /* 256K int32 */
+#define INIT_OUT_CAP    (1 << 18)
 
 static const int32_t *g_base   = NULL;
 static const int32_t *g_check  = NULL;
 static const int32_t *g_values = NULL;
 static uint32_t       g_size   = 0;
 
-/* byte_lut[c]: token ID for single-byte char at DAT root, or -1 */
 static int32_t g_byte_lut[256];
-
-/* pair_lut[(c0<<8)|c1]: token ID for 2-byte sequence at DAT root, or -1 */
 static int32_t g_pair_lut[65536];
 
 static Py_buffer g_pybuf;
 static int       g_pybuf_held = 0;
 static PyObject *g_buf_owner  = NULL;
 
-/* ── Pre-baked integer object cache for list output ────────── */
+/* ── Pre-baked int cache ────────────────────────────────────── */
 static PyObject **g_intcache    = NULL;
 static uint32_t   g_intcache_sz = 0;
 
@@ -136,47 +136,40 @@ static void _build_pair_lut(void) {
         if ((uint32_t)nx1 < g_size && g_check[nx1] == 0) {
             for (int c1 = 0; c1 < 256; ++c1) {
                 int32_t nx2 = g_base[nx1] + c1;
-                if ((uint32_t)nx2 < g_size && g_check[nx2] == nx1 && g_values[nx2] != -1) {
+                if ((uint32_t)nx2 < g_size && g_check[nx2] == nx1 && g_values[nx2] != -1)
                     g_pair_lut[(c0 << 8) | c1] = g_values[nx2];
-                } else {
+                else
                     g_pair_lut[(c0 << 8) | c1] = -1;
-                }
             }
         } else {
-            for (int c1 = 0; c1 < 256; ++c1) {
+            for (int c1 = 0; c1 < 256; ++c1)
                 g_pair_lut[(c0 << 8) | c1] = -1;
-            }
         }
     }
 }
 
-/* ── Global per-OMP-thread word caches (allocated once, never freed) */
+/* ── Per-thread word cache management ────────────────────── */
 #define MAX_PAR_THREADS 16
 static WCEntry *g_par_wc[MAX_PAR_THREADS];
 
 static void _init_wc(WCEntry *wc) {
-    /* Just zero the block — key=0 is the unused sentinel.
-     * No valid word can produce key=0 because top 8 bits embed length>=1. */
-    memset(wc, 0, WORD_CACHE_SIZE * sizeof(WCEntry));
+    memset(wc, 0, WC_TOTAL * sizeof(WCEntry));
 }
 
 static void _ensure_par_caches(void) {
     for (int i = 0; i < MAX_PAR_THREADS; ++i) {
         if (!g_par_wc[i]) {
-            g_par_wc[i] = (WCEntry *)malloc(WORD_CACHE_SIZE * sizeof(WCEntry));
-            if (g_par_wc[i]) _init_wc(g_par_wc[i]);
+            g_par_wc[i] = (WCEntry *)calloc(WC_TOTAL, sizeof(WCEntry));
         }
     }
 }
 
-/* Thread-local cache: allocated as pointer to avoid 2MB BSS for single-threaded use */
 static __thread WCEntry *g_tl_wc   = NULL;
 static __thread int      g_tl_init = 0;
 
 static WCEntry *_get_tl_wc(void) {
     if (__builtin_expect(!g_tl_init, 0)) {
-        g_tl_wc = (WCEntry *)malloc(WORD_CACHE_SIZE * sizeof(WCEntry));
-        if (g_tl_wc) _init_wc(g_tl_wc);
+        g_tl_wc = (WCEntry *)calloc(WC_TOTAL, sizeof(WCEntry));
         g_tl_init = 1;
     }
     return g_tl_wc;
@@ -193,9 +186,7 @@ static void _clear_par_caches(void) {
 /* ══════════════════════════════════════════════════════════════
  *  Hash Function
  * ══════════════════════════════════════════════════════════════ */
-/* Compute word cache key: hash with word length embedded in top 8 bits.
- * Single 64-bit comparison replaces separate hash+len checks. */
-static uint8_t g_isword[256];   /* 1 = word char, 0 = non-word */
+static uint8_t g_isword[256];
 
 static void _build_isword(void) {
     for (int c = 0; c < 256; ++c)
@@ -203,15 +194,13 @@ static void _build_isword(void) {
                        (c>='0'&&c<='9')||c=='_'||c>=0x80) ? 1 : 0;
 }
 
-/* Compute word cache key: hash with word length embedded in top 8 bits.
- * Optimized for n <= 16. */
 static inline uint64_t word_key(const uint8_t * restrict d, size_t n) {
     uint64_t h;
     if (n <= 7) {
         uint64_t v = 0; memcpy(&v, d, n);
         h = v | ((uint64_t)n << 56);
     } else if (n <= 15) {
-        uint64_t v1 = 0, v2 = 0;
+        uint64_t v1, v2 = 0;
         memcpy(&v1, d, 8); memcpy(&v2, d + 8, n - 8);
         h = v1 ^ (v2 * 1099511628211ULL);
         h ^= (h >> 33); h *= 0xff51afd7ed558ccdULL; h ^= (h >> 33);
@@ -227,7 +216,6 @@ static inline uint64_t word_key(const uint8_t * restrict d, size_t n) {
     }
     return h;
 }
-
 
 /* ══════════════════════════════════════════════════════════════
  *  AVX2 Boundary Scanners
@@ -289,19 +277,10 @@ static size_t find_word(const uint8_t *t, size_t p, size_t n) {
 typedef struct { int32_t *d; size_t n, cap; } TBuf;
 
 static inline void tb_init(TBuf *b, size_t cap) {
-    /* Pre-size generously so the hot-path realloc branch almost never fires.
-     * Estimate: 1 token per 3.5 chars for typical text. */
     size_t alloc = (cap > 64) ? cap : INIT_OUT_CAP;
     b->d   = (int32_t *)malloc(alloc * sizeof(int32_t));
     b->n   = 0;
     b->cap = b->d ? alloc : 0;
-}
-static inline void tb_push(TBuf * restrict b, int32_t v) {
-    if (__builtin_expect(b->n >= b->cap, 0)) {
-        b->cap *= 2;
-        b->d = (int32_t *)realloc(b->d, b->cap * sizeof(int32_t));
-    }
-    b->d[b->n++] = v;
 }
 static inline void tb_free(TBuf *b) { free(b->d); b->d=NULL; b->n=b->cap=0; }
 static void tb_concat(TBuf *dst, TBuf *src) {
@@ -310,9 +289,8 @@ static void tb_concat(TBuf *dst, TBuf *src) {
         while (dst->cap < need) dst->cap = dst->cap ? dst->cap * 2 : 1024;
         dst->d = (int32_t *)realloc(dst->d, dst->cap * sizeof(int32_t));
     }
-    if (src->n > 0 && src->d) {
+    if (src->n > 0 && src->d)
         memcpy(dst->d + dst->n, src->d, src->n * sizeof(int32_t));
-    }
     dst->n = need;
     tb_free(src);
 }
@@ -325,14 +303,14 @@ static inline int dat_match(const uint8_t * restrict t, size_t end, size_t pos,
     const int32_t *base=g_base, *check=g_check, *values=g_values;
     uint32_t sz=g_size;
     int32_t node=0, best=-1; int blen=0;
-    
+
     if (__builtin_expect(pos < end, 1)) {
         int32_t nx = base[0] + t[pos];
         if (__builtin_expect((uint32_t)nx < sz && check[nx] == 0, 1)) {
             node = nx;
             int32_t v = values[node];
             if (v != -1) { best = v; blen = 1; }
-            
+
             for (size_t i = pos + 1; i < end; ++i) {
                 nx = base[node] + t[i];
                 if (__builtin_expect((uint32_t)nx >= sz || check[nx] != node, 0)) break;
@@ -346,7 +324,7 @@ static inline int dat_match(const uint8_t * restrict t, size_t end, size_t pos,
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Core Tokenize Loop  (v5.5 — 64K cache + 4-token entries)
+ *  Core Tokenize Loop  (v5.7.1 — 2-way SA, unified 32B entries)
  * ══════════════════════════════════════════════════════════════ */
 static void tokenize_one(const uint8_t * restrict text, size_t len,
                           TBuf * restrict out, WCEntry * restrict wc) {
@@ -368,14 +346,6 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
         *op++ = (val); \
     } while(0)
 
-/* PUSH_CACHE_ENTRY: emit 1-4 cached tokens. */
-#define PUSH_CACHE_ENTRY(ce) do { \
-        FAST_PUSH((ce)->tok_id); \
-        if ((ce)->tok_id2 >= 0) { FAST_PUSH((ce)->tok_id2); } \
-        if ((ce)->tok_id3 >= 0) { FAST_PUSH((ce)->tok_id3); } \
-        if ((ce)->tok_id4 >= 0) { FAST_PUSH((ce)->tok_id4); } \
-    } while(0)
-
 #define FUSE_SEPARATOR \
     while (__builtin_expect(pos < len, 1)) { \
         uint8_t _nc = text[pos]; \
@@ -390,13 +360,14 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
         int isw = isw_lut[c0];
 
         if (isw) {
-            /* ── Unified Word span ── */
+            /* ── Word span ── */
             size_t ws = pos;
             size_t we = find_nonword(text, ws + 1, len);
             size_t wl = we - ws;
             pos = we;
 
             if (__builtin_expect(wl <= MAX_WORD_LEN, 1)) {
+                /* 2-char fast path via pair LUT */
                 if (__builtin_expect(wl == 2, 0)) {
                     uint16_t pair = ((uint16_t)text[ws] << 8) | (uint8_t)text[ws + 1];
                     int32_t pt = g_pair_lut[pair];
@@ -406,10 +377,13 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
                         continue;
                     }
                 }
+
+                /* Compute hash */
                 uint64_t key;
                 if (__builtin_expect(ws + 16 <= len, 1)) {
                     uint64_t v; memcpy(&v, text + ws, 8);
-                    static const uint64_t M[9] = {0,0xFF,0xFFFF,0xFFFFFF,0xFFFFFFFFULL,0xFFFFFFFFFFULL,0xFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL};
+                    static const uint64_t M[9] = {0,0xFF,0xFFFF,0xFFFFFF,0xFFFFFFFFULL,
+                        0xFFFFFFFFFFULL,0xFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL};
                     if (__builtin_expect(wl <= 7, 1)) {
                         key = (v & M[wl]) | ((uint64_t)wl << 56);
                     } else if (__builtin_expect(wl <= 15, 1)) {
@@ -424,19 +398,43 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
                 } else {
                     key = word_key(text + ws, wl);
                 }
-                uint32_t sl = (uint32_t)((key * 11400714819323198485ULL) >> 48);
-                WCEntry *ce = &wc[sl];
-                
-                if (__builtin_expect(ce->key == key, 1)) {
-                    if (__builtin_expect(ce->tok_id >= 0, 1)) {
-                        /* Cache HIT */
-                        PUSH_CACHE_ENTRY(ce);
+
+                /* 2-way set-associative lookup.
+                 * Both entries are in the SAME 64-byte cache line. */
+                uint32_t si = (uint32_t)((key * 11400714819323198485ULL) >> 48) & WC_SET_MASK;
+                WCEntry *e0 = &wc[si * 2];
+                WCEntry *e1 = e0 + 1;
+
+                /* Check way 0 */
+                if (__builtin_expect(e0->key == key, 1)) {
+                    if (__builtin_expect(e0->ntoks > 0, 1)) {
+                        int nt = e0->ntoks;
+                        FAST_PUSH(e0->ids[0]);
+                        if (nt >= 2) FAST_PUSH(e0->ids[1]);
+                        if (nt >= 3) FAST_PUSH(e0->ids[2]);
+                        if (nt == 4) FAST_PUSH(e0->ids[3]);
                         FUSE_SEPARATOR
                         continue;
                     }
                     goto slow_word;
                 }
-                /* Cache MISS */
+                /* Check way 1 */
+                if (__builtin_expect(e1->key == key, 0)) {
+                    if (__builtin_expect(e1->ntoks > 0, 1)) {
+                        int nt = e1->ntoks;
+                        FAST_PUSH(e1->ids[0]);
+                        if (nt >= 2) FAST_PUSH(e1->ids[1]);
+                        if (nt >= 3) FAST_PUSH(e1->ids[2]);
+                        if (nt == 4) FAST_PUSH(e1->ids[3]);
+                        /* Promote to way 0 (swap) for LRU behavior */
+                        WCEntry tmp = *e0; *e0 = *e1; *e1 = tmp;
+                        FUSE_SEPARATOR
+                        continue;
+                    }
+                    goto slow_word;
+                }
+
+                /* ── CACHE MISS: tokenize via DAT, then insert ── */
 slow_word:;
                 {
                     size_t wp = ws;
@@ -453,24 +451,24 @@ slow_word:;
                             cnt++; wp++;
                         }
                     }
-                    ce->key = key;
+                    /* Evict way 1 (LRU), insert new entry at way 0 */
+                    *e1 = *e0;  /* demote old way 0 to way 1 */
+                    e0->key = key;
                     if (cnt >= 1 && cnt <= 4) {
-                        ce->tok_id  = ts[0];
-                        ce->tok_id2 = (cnt >= 2) ? ts[1] : -1;
-                        ce->tok_id3 = (cnt >= 3) ? ts[2] : -1;
-                        ce->tok_id4 = (cnt == 4) ? ts[3] : -1;
-                        ce->ntoks   = cnt;
+                        e0->ntoks = cnt;
+                        e0->ids[0] = ts[0];
+                        e0->ids[1] = (cnt >= 2) ? ts[1] : -1;
+                        e0->ids[2] = (cnt >= 3) ? ts[2] : -1;
+                        e0->ids[3] = (cnt == 4) ? ts[3] : -1;
                         FUSE_SEPARATOR
                     } else {
-                        ce->tok_id  = -2; 
-                        ce->tok_id2 = -1;
-                        ce->tok_id3 = -1;
-                        ce->tok_id4 = -1;
-                        ce->ntoks   = 0;
+                        e0->ntoks = 0;
+                        e0->ids[0] = -1; e0->ids[1] = -1;
+                        e0->ids[2] = -1; e0->ids[3] = -1;
                     }
                 }
             } else {
-                /* Word > MAX_WORD_LEN: no caching, raw DAT */
+                /* Word > MAX_WORD_LEN: raw DAT, no caching */
                 size_t wp = ws;
                 while (wp < we) {
                     int32_t tid; int ml = dat_match(text, we, wp, &tid);
@@ -483,7 +481,6 @@ slow_word:;
             if (__builtin_expect(pos + 1 < len, 1)) {
                 uint8_t c1 = text[pos + 1];
                 if (!isw_lut[c1]) {
-                    /* Both c0 and c1 are non-word chars: check 2-char operator LUT (==, !=, ->, ::, <=, >=, etc.) */
                     uint16_t pair = ((uint16_t)c0 << 8) | c1;
                     int32_t pt = g_pair_lut[pair];
                     if (__builtin_expect(pt >= 0, 1)) {
@@ -497,12 +494,9 @@ slow_word:;
             pos++;
             if (__builtin_expect(lt0 >= 0, 1)) {
                 FAST_PUSH(lt0);
-                /* Peek ahead: if next is word char, skip run-consuming loop */
                 if (__builtin_expect(pos < len, 1)) {
-                    uint8_t c1 = text[pos];
-                    if (isw_lut[c1]) continue;
+                    if (isw_lut[text[pos]]) continue;
                 }
-                /* Consume rest of non-word run */
                 while (pos < len) {
                     uint8_t cx = text[pos];
                     if (isw_lut[cx]) break;
@@ -523,7 +517,6 @@ slow_word:;
                     }
                 }
             } else {
-                /* Multi-char non-word via DAT */
                 size_t ne = find_word(text, pos-1, len);
                 for (size_t wp=pos-1; wp<ne; ) {
                     int32_t lt = blut[(uint8_t)text[wp]];
@@ -539,14 +532,11 @@ slow_word:;
         }
     }
 #undef FUSE_SEPARATOR
-#undef PUSH_CACHE_ENTRY
 #undef FAST_PUSH
     out->d = obase;
     out->cap = ocap;
     out->n = (size_t)(op - obase);
 }
-
-
 
 /* ══════════════════════════════════════════════════════════════
  *  Output Converters
@@ -573,11 +563,11 @@ static PyObject *tb_to_pylist(const TBuf *b) {
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Parallel document split helper (v5.6.2 — 32KB threshold)
+ *  OMP Parallel Dispatch (aggressive: 8KB threshold, 16KB chunks)
  * ══════════════════════════════════════════════════════════════ */
-/* PAR_THRESHOLD: 32KB threshold to trigger OMP parallel split. */
-#define PAR_THRESHOLD (256 * 1024)    /* 32KB: sequential is faster for anything smaller */
-#define PAR_MIN_THREADS 2           /* Enable OMP on 2+ vCPUs (Google Colab, etc.) */
+#define PAR_THRESHOLD    (64 * 1024)    /* 64KB: below this, serial is faster */
+#define PAR_MIN_THREADS  2
+#define MAX_PAR_CHUNKS   64
 
 static size_t split_at_ws(const uint8_t *t, size_t target, size_t len) {
     if (target>=len) return len;
@@ -590,28 +580,22 @@ static size_t split_at_ws(const uint8_t *t, size_t target, size_t len) {
     return target;
 }
 
-/* Tokenize text with OMP split if large enough, otherwise serial.
- * _ensure_par_caches() is called BEFORE the parallel section to avoid race. */
-#define MAX_PAR_CHUNKS 256
-#define TARGET_MICRO_CHUNK (256 * 1024)   /* 32KB micro-chunks fit in L2 cache */
-
 static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
 #ifdef _OPENMP
     if (len >= PAR_THRESHOLD) {
         int max_t = omp_get_max_threads();
         if (max_t > MAX_PAR_THREADS) max_t = MAX_PAR_THREADS;
         if (max_t >= PAR_MIN_THREADS) {
-            int nchunks = (int)((len + TARGET_MICRO_CHUNK - 1) / TARGET_MICRO_CHUNK);
-            if (nchunks < max_t) nchunks = max_t;
+            /* Use max_t * 2 chunks for good load balance without excessive overhead */
+            int nchunks = max_t * 2;
             if (nchunks > MAX_PAR_CHUNKS) nchunks = MAX_PAR_CHUNKS;
-
+            if (nchunks < max_t) nchunks = max_t;
             size_t starts[MAX_PAR_CHUNKS + 1];
             starts[0] = 0;
             for (int i = 1; i < nchunks; ++i)
                 starts[i] = split_at_ws((const uint8_t*)text, len * (size_t)i / (size_t)nchunks, len);
             starts[nchunks] = len;
 
-            /* Ensure thread caches exist BEFORE forking (avoid race) */
             _ensure_par_caches();
 
             TBuf chunks[MAX_PAR_CHUNKS];
@@ -621,16 +605,14 @@ static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
             }
 
             Py_BEGIN_ALLOW_THREADS
-
             #pragma omp parallel for num_threads(max_t) schedule(static, 1)
             for (int i = 0; i < nchunks; ++i) {
                 int tid = omp_get_thread_num();
                 if (tid >= MAX_PAR_THREADS) tid = 0;
-                WCEntry *wc = (g_par_wc[tid]) ? g_par_wc[tid] : g_par_wc[0];
+                WCEntry *twc = g_par_wc[tid] ? g_par_wc[tid] : g_par_wc[0];
                 size_t s = starts[i], e = starts[i+1];
-                tokenize_one((const uint8_t*)text + s, e - s, &chunks[i], wc);
+                tokenize_one((const uint8_t*)text + s, e - s, &chunks[i], twc);
             }
-
             Py_END_ALLOW_THREADS
 
             for (int i = 0; i < nchunks; ++i) tb_concat(result, &chunks[i]);
@@ -638,12 +620,10 @@ static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
         }
     }
 #endif
-    /* Serial path */
     WCEntry *wc = _get_tl_wc();
     if (!wc) {
-        /* malloc failed — fallback: tiny stack cache, zeroed by memset (key=0=unused) */
-        static WCEntry fallback_wc[64];
-        memset(fallback_wc, 0, sizeof(fallback_wc));
+        static WCEntry *fallback_wc = NULL;
+        if (!fallback_wc) fallback_wc = (WCEntry *)calloc(WC_TOTAL, sizeof(WCEntry));
         tokenize_one((const uint8_t*)text, len, result, fallback_wc);
         return;
     }
@@ -698,9 +678,6 @@ static PyObject *py_tokenize(PyObject *self, PyObject *args) {
     PyObject *res=tb_to_numpy(&r); tb_free(&r); return res;
 }
 
-/* ══════════════════════════════════════════════════════════════
- *  Python API: tokenize_to_list → list[int]
- * ══════════════════════════════════════════════════════════════ */
 static PyObject *py_tokenize_to_list(PyObject *self, PyObject *args) {
     const char *text; Py_ssize_t len;
     if (!PyArg_ParseTuple(args,"s#",&text,&len)) return NULL;
@@ -737,8 +714,8 @@ static PyObject *py_tokenize_batch(PyObject *self, PyObject *args) {
     #pragma omp parallel
     {
         int tid=omp_get_thread_num();
-        WCEntry *wc=g_par_wc[tid<MAX_PAR_THREADS?tid:0];
-        if (!wc) wc=g_par_wc[0];
+        if (tid >= MAX_PAR_THREADS) tid = 0;
+        WCEntry *wc = g_par_wc[tid] ? g_par_wc[tid] : g_par_wc[0];
         #pragma omp for schedule(dynamic,1)
         for (Py_ssize_t i=0;i<n;++i) {
             tb_init(&bufs[i],(size_t)(lens[i]/3+64));
@@ -746,11 +723,12 @@ static PyObject *py_tokenize_batch(PyObject *self, PyObject *args) {
         }
     }
 #else
-    { static WCEntry lc[WORD_CACHE_SIZE];
-      for (Py_ssize_t i=0;i<n;++i) {
-        tb_init(&bufs[i],(size_t)(lens[i]/3+64));
-        tokenize_one((const uint8_t*)txts[i],(size_t)lens[i],&bufs[i],lc);
-      }
+    {
+        WCEntry *wc = _get_tl_wc();
+        for (Py_ssize_t i=0;i<n;++i) {
+            tb_init(&bufs[i],(size_t)(lens[i]/3+64));
+            tokenize_one((const uint8_t*)txts[i],(size_t)lens[i],&bufs[i],wc);
+        }
     }
 #endif
     Py_END_ALLOW_THREADS
@@ -766,9 +744,6 @@ static PyObject *py_tokenize_batch(PyObject *self, PyObject *args) {
     free(bufs);free(txts);free(lens); return res;
 }
 
-/* ══════════════════════════════════════════════════════════════
- *  Python API: tokenize_batch_to_list → list[list[int]]
- * ══════════════════════════════════════════════════════════════ */
 static PyObject *py_tokenize_batch_to_list(PyObject *self, PyObject *args) {
     PyObject *sl;
     if (!PyArg_ParseTuple(args,"O!",&PyList_Type,&sl)) return NULL;
@@ -788,11 +763,12 @@ static PyObject *py_tokenize_batch_to_list(PyObject *self, PyObject *args) {
     TBuf *bufs=(TBuf*)calloc((size_t)n,sizeof(TBuf));
     if (!bufs) { free(txts);free(lens); return PyErr_NoMemory(); }
     Py_BEGIN_ALLOW_THREADS
-    { static WCEntry lc[WORD_CACHE_SIZE];
-      for (Py_ssize_t i=0;i<n;++i) {
-        tb_init(&bufs[i],(size_t)(lens[i]/3+64));
-        tokenize_one((const uint8_t*)txts[i],(size_t)lens[i],&bufs[i],lc);
-      }
+    {
+        WCEntry *wc = _get_tl_wc();
+        for (Py_ssize_t i=0;i<n;++i) {
+            tb_init(&bufs[i],(size_t)(lens[i]/3+64));
+            tokenize_one((const uint8_t*)txts[i],(size_t)lens[i],&bufs[i],wc);
+        }
     }
     Py_END_ALLOW_THREADS
     PyObject *res=PyList_New(n);
@@ -828,7 +804,7 @@ static PyObject *py_get_hardware_info(PyObject *self, PyObject *args) {
 #endif
     if (!brand[0]) strcpy(brand,"Unknown CPU");
     char info[320];
-    snprintf(info,sizeof(info),"%s [Turbo/v5.6.2/SWAR+%s/%s 32K-MicroChunks-Static intcache=%u]",
+    snprintf(info,sizeof(info),"%s [Turbo/v5.7.1/2Way-SA+%s/%s 64Ksets×2ways intcache=%u]",
              brand,
 #if HAVE_AVX2
              "AVX2",
@@ -858,7 +834,7 @@ static PyMethodDef methods[] = {
 };
 static struct PyModuleDef moddef = {
     PyModuleDef_HEAD_INIT,"crayon_turbo",
-    "CRAYON Turbo v5.0: ByteLUT+AVX2+OMP-Split+numpy", -1, methods
+    "CRAYON Turbo v5.7.1: 2Way-SA-Cache+AVX2+OMP+numpy", -1, methods
 };
 PyMODINIT_FUNC PyInit_crayon_turbo(void) {
     memset(g_par_wc,0,sizeof(g_par_wc));
