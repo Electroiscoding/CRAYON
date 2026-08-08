@@ -550,11 +550,16 @@ static PyObject *tb_to_pylist(const TBuf *b) {
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  OMP Parallel Dispatch  (v5.7.4 — moderate chunks, pre-sized merge)
+/* ══════════════════════════════════════════════════════════════
+ *  OMP Parallel Dispatch  (v5.7.6 — high threshold, coarse chunks)
+ *  ──────────────────────────────────────────────────────────────
+ *  OMP fork/join on Colab Xeon costs ~1-3ms per call. That overhead
+ *  only pays off for texts >512KB where parallel work = ~5ms.
+ *  Below 512KB, serial is faster. Use max_t chunks (not max_t*4).
  * ══════════════════════════════════════════════════════════════ */
-#define PAR_THRESHOLD       (8 * 1024)
+#define PAR_THRESHOLD       (512 * 1024)   /* 512KB: OMP overhead only pays off here */
 #define PAR_MIN_THREADS     2
-#define MAX_PAR_CHUNKS      128
+#define MAX_PAR_CHUNKS      MAX_PAR_THREADS
 
 static size_t split_at_ws(const uint8_t *t, size_t target, size_t len) {
     if (target>=len) return len;
@@ -573,10 +578,9 @@ static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
         int max_t = omp_get_max_threads();
         if (max_t > MAX_PAR_THREADS) max_t = MAX_PAR_THREADS;
         if (max_t >= PAR_MIN_THREADS) {
-            /* Use max_t * 4 chunks for good load balance */
-            int nchunks = max_t * 4;
+            /* Use exactly max_t chunks — coarse split avoids OMP overhead */
+            int nchunks = max_t;
             if (nchunks > MAX_PAR_CHUNKS) nchunks = MAX_PAR_CHUNKS;
-            if (nchunks < max_t) nchunks = max_t;
 
             size_t starts[MAX_PAR_CHUNKS + 1];
             starts[0] = 0;
@@ -587,7 +591,7 @@ static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
 
             _ensure_par_caches();
 
-            TBuf chunks[MAX_PAR_CHUNKS];
+            TBuf chunks[MAX_PAR_THREADS];
             for (int i = 0; i < nchunks; ++i) {
                 size_t clen = starts[i+1] - starts[i];
                 tb_init(&chunks[i], clen / 2 + 64);
@@ -802,7 +806,7 @@ static PyObject *py_get_hardware_info(PyObject *self, PyObject *args) {
 #endif
     if (!brand[0]) strcpy(brand,"Unknown CPU");
     char info[320];
-    snprintf(info,sizeof(info),"%s [Turbo/v5.7.4/L2-Cache+%s/%s 4Ksets×2ways intcache=%u]",
+    snprintf(info,sizeof(info),"%s [Turbo/v5.7.6/L2-Cache+%s/%s 4Ksets×2ways intcache=%u]",
              brand,
 #if HAVE_AVX2
              "AVX2",
