@@ -976,8 +976,14 @@ class CrayonVocab:
                     raw_bytes = self._dat_mem_ref[:]
                     result = self._gpu_backend.load_gpu(raw_bytes)
                     self._profile_loaded = True
-                    # ALSO LOAD CPU FOR FALLBACK
+                    # ALSO LOAD CPU AND TURBO FOR FALLBACK / direct turbo access
                     self._cpu_backend.load_dat(self._dat_mem_ref)
+                    if self._turbo_backend is not None:
+                        try:
+                            self._turbo_backend.load_dat(self._dat_mem_ref)
+                        except Exception as te:
+                            _logger.warning("Turbo engine DAT load failed (CUDA path): %s", te)
+                            self._turbo_backend = None
                     _logger.debug("Profile loaded on CUDA: %s (result: %s)", os.path.basename(path), result)
                     return
                 except Exception as e:
@@ -986,6 +992,12 @@ class CrayonVocab:
                     self._device_state = DeviceState.FALLBACK
                     self._init_selected_backend()
                     self._cpu_backend.load_dat(self._dat_mem_ref)
+                    if self._turbo_backend is not None:
+                        try:
+                            self._turbo_backend.load_dat(self._dat_mem_ref)
+                        except Exception as te:
+                            _logger.warning("Turbo engine DAT load failed (CUDA fallback): %s", te)
+                            self._turbo_backend = None
                     self._profile_loaded = True
                     return
             
@@ -994,8 +1006,14 @@ class CrayonVocab:
                     raw_bytes = self._dat_mem_ref[:]
                     self._gpu_backend.load_rocm(raw_bytes)
                     self._profile_loaded = True
-                    # ALSO LOAD CPU FOR FALLBACK
+                    # ALSO LOAD CPU AND TURBO FOR FALLBACK / direct turbo access
                     self._cpu_backend.load_dat(self._dat_mem_ref)
+                    if self._turbo_backend is not None:
+                        try:
+                            self._turbo_backend.load_dat(self._dat_mem_ref)
+                        except Exception as te:
+                            _logger.warning("Turbo engine DAT load failed (ROCm path): %s", te)
+                            self._turbo_backend = None
                     _logger.debug("Profile loaded on ROCm: %s", os.path.basename(path))
                     return
                 except Exception as e:
@@ -1004,6 +1022,12 @@ class CrayonVocab:
                     self._device_state = DeviceState.FALLBACK
                     self._init_selected_backend()
                     self._cpu_backend.load_dat(self._dat_mem_ref)
+                    if self._turbo_backend is not None:
+                        try:
+                            self._turbo_backend.load_dat(self._dat_mem_ref)
+                        except Exception as te:
+                            _logger.warning("Turbo engine DAT load failed (ROCm fallback): %s", te)
+                            self._turbo_backend = None
                     self._profile_loaded = True
                     return
             
