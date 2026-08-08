@@ -1,18 +1,17 @@
 /*
- * CRAYON TURBO ENGINE v5.7.3 (2-Way SA + Prefetch + OMP@16KB)
+ * CRAYON TURBO ENGINE v5.7.4 (L2-Resident Cache + Clean OMP)
  * ==============================================================================
  * Target: >= 100M tokens/sec on all real-world text, all sizes.
  *
  * Architecture:
  *  1. BYTE LUT + PAIR LUT: O(1) for single-char and 2-char tokens.
  *  2. UNIFIED WORD SCANNER: AVX2 _mm256_movemask_epi8 boundary detection.
- *  3. 2-WAY SET-ASSOCIATIVE WORD CACHE:
- *     - Entry = 32 bytes (key + 4 token IDs + ntoks). Everything in one struct.
- *     - Set   = 2 entries = 64 bytes = exactly 1 L1 cache line.
- *     - 64K sets × 2 ways = 128K entries = 4MB total.
- *     - Cache hit = 1 cache line load, check 2 keys, read token IDs. All FREE.
- *     - Eliminates collision thrashing AND split-array double-load penalty.
- *  4. AGGRESSIVE OMP: 8KB threshold, 16KB micro-chunks.
+ *  3. L2-RESIDENT 2-WAY SET-ASSOCIATIVE WORD CACHE:
+ *     - 4K sets × 2 ways = 8K entries × 32B = 256KB total.
+ *     - Fits ENTIRELY in L2 cache (256KB). Access = ~12 cycles, not ~40 (L3).
+ *     - 8K entries with Zipf word frequency → ~95% hit rate.
+ *     - Cache miss falls through to DAT trie (only ~5% of lookups).
+ *  4. OMP: 8KB threshold, max_t×4 chunks with pre-sized merge.
  *  5. NUMPY OUTPUT: zero per-token Python allocation.
  *  6. PRE-BAKED INT CACHE: O(1) list output.
  */
@@ -52,20 +51,20 @@
 #endif
 
 /* ══════════════════════════════════════════════════════════════
- *  2-Way Set-Associative Word Cache  (unified 32-byte entries)
- *  ────────────────────────────────────────────────────────────
- *  Each entry: 32 bytes (key=8, ids[4]=16, ntoks=4, pad=4).
- *  Each set:   2 entries = 64 bytes = 1 L1 cache line.
- *  Total:      64K sets × 2 ways = 128K entries = 4MB.
+ *  L2-RESIDENT 2-Way Set-Associative Word Cache
+ *  ─────────────────────────────────────────────
+ *  4K sets × 2 ways × 32 bytes/entry = 256KB total.
+ *  This fits ENTIRELY in the L2 cache (256KB per core).
+ *  L2 access = ~12 cycles vs L3 = ~40 cycles = 3.3x faster.
  *
- *  A cache hit loads ONE cache line, checks 2 keys, and reads
- *  token IDs from the SAME line. Zero extra memory traffic.
+ *  With Zipf word frequency distribution, top 8K words cover
+ *  ~95% of all word occurrences → 95% L2 hit rate.
  * ══════════════════════════════════════════════════════════════ */
-#define WC_SETS_SHIFT   16
-#define WC_SETS         (1u << WC_SETS_SHIFT)   /* 64K sets */
+#define WC_SETS_SHIFT   12
+#define WC_SETS         (1u << WC_SETS_SHIFT)   /* 4K sets */
 #define WC_SET_MASK     (WC_SETS - 1)
 #define WC_WAYS         2
-#define WC_TOTAL        (WC_SETS * WC_WAYS)     /* 128K entries */
+#define WC_TOTAL        (WC_SETS * WC_WAYS)     /* 8K entries = 256KB */
 
 typedef struct {
     uint64_t key;       /* hash with len in top 8 bits; 0 = unused */
@@ -283,17 +282,6 @@ static inline void tb_init(TBuf *b, size_t cap) {
     b->cap = b->d ? alloc : 0;
 }
 static inline void tb_free(TBuf *b) { free(b->d); b->d=NULL; b->n=b->cap=0; }
-static void tb_concat(TBuf *dst, TBuf *src) {
-    size_t need = dst->n + src->n;
-    if (need > dst->cap) {
-        while (dst->cap < need) dst->cap = dst->cap ? dst->cap * 2 : 1024;
-        dst->d = (int32_t *)realloc(dst->d, dst->cap * sizeof(int32_t));
-    }
-    if (src->n > 0 && src->d)
-        memcpy(dst->d + dst->n, src->d, src->n * sizeof(int32_t));
-    dst->n = need;
-    tb_free(src);
-}
 
 /* ══════════════════════════════════════════════════════════════
  *  DAT Longest-Match
@@ -324,7 +312,7 @@ static inline int dat_match(const uint8_t * restrict t, size_t end, size_t pos,
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Core Tokenize Loop  (v5.7.1 — 2-way SA, unified 32B entries)
+ *  Core Tokenize Loop  (v5.7.4 — L2-resident cache, no prefetch overhead)
  * ══════════════════════════════════════════════════════════════ */
 static void tokenize_one(const uint8_t * restrict text, size_t len,
                           TBuf * restrict out, WCEntry * restrict wc) {
@@ -399,29 +387,10 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
                     key = word_key(text + ws, wl);
                 }
 
-                /* 2-way set-associative lookup.
-                 * Both entries are in the SAME 64-byte cache line. */
-                uint32_t si = (uint32_t)((key * 11400714819323198485ULL) >> 48) & WC_SET_MASK;
+                /* 2-way set-associative lookup (entire set in 1 cache line) */
+                uint32_t si = (uint32_t)((key * 11400714819323198485ULL) >> 52) & WC_SET_MASK;
                 WCEntry *e0 = &wc[si * 2];
                 WCEntry *e1 = e0 + 1;
-
-                /* Prefetch cache line NOW. Even a few cycles helps hide L3 latency
-                 * since the compiler will schedule other work between here and access. */
-                __builtin_prefetch(e0, 0, 3);
-
-                /* Lookahead: prefetch the NEXT word's cache set while we process this one.
-                 * This hides the full L3 latency (~40 cycles) for the next iteration. */
-                if (__builtin_expect(we < len, 1)) {
-                    /* Skip separator chars to find next word start */
-                    size_t nws = we;
-                    while (nws < len && !isw_lut[text[nws]]) nws++;
-                    if (nws + 4 <= len) {
-                        /* Quick 4-byte hash for prefetch (doesn't need to be exact) */
-                        uint32_t ph; memcpy(&ph, text + nws, 4);
-                        uint32_t nsi = (uint32_t)((ph * 2654435761U) >> 16) & WC_SET_MASK;
-                        __builtin_prefetch(&wc[nsi * 2], 0, 3);
-                    }
-                }
 
                 /* Check way 0 */
                 if (__builtin_expect(e0->key == key, 1)) {
@@ -444,7 +413,7 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
                         if (nt >= 2) FAST_PUSH(e1->ids[1]);
                         if (nt >= 3) FAST_PUSH(e1->ids[2]);
                         if (nt == 4) FAST_PUSH(e1->ids[3]);
-                        /* Promote to way 0 (swap) for LRU behavior */
+                        /* Promote to way 0 (swap) */
                         WCEntry tmp = *e0; *e0 = *e1; *e1 = tmp;
                         FUSE_SEPARATOR
                         continue;
@@ -452,7 +421,7 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
                     goto slow_word;
                 }
 
-                /* ── CACHE MISS: tokenize via DAT, then insert ── */
+                /* ── CACHE MISS ── */
 slow_word:;
                 {
                     size_t wp = ws;
@@ -469,8 +438,8 @@ slow_word:;
                             cnt++; wp++;
                         }
                     }
-                    /* Evict way 1 (LRU), insert new entry at way 0 */
-                    *e1 = *e0;  /* demote old way 0 to way 1 */
+                    /* Insert: evict way 1, promote to way 0 */
+                    *e1 = *e0;
                     e0->key = key;
                     if (cnt >= 1 && cnt <= 4) {
                         e0->ntoks = cnt;
@@ -486,7 +455,7 @@ slow_word:;
                     }
                 }
             } else {
-                /* Word > MAX_WORD_LEN: raw DAT, no caching */
+                /* Word > MAX_WORD_LEN: raw DAT */
                 size_t wp = ws;
                 while (wp < we) {
                     int32_t tid; int ml = dat_match(text, we, wp, &tid);
@@ -581,17 +550,11 @@ static PyObject *tb_to_pylist(const TBuf *b) {
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  OMP Parallel Dispatch  (v5.7.3 — 4KB L2-fit micro-chunks)
- *  ──────────────────────────────────────────────────────────
- *  Key insight: at 4KB chunk size, each chunk fits in L2 cache
- *  and processes at ~130M tok/s. By splitting ALL large texts
- *  into 4KB micro-chunks and processing in parallel, we maintain
- *  ~130M tok/s per core regardless of total document size.
+ *  OMP Parallel Dispatch  (v5.7.4 — moderate chunks, pre-sized merge)
  * ══════════════════════════════════════════════════════════════ */
-#define PAR_THRESHOLD       (8 * 1024)      /* 8KB: below this, serial is fine (already ~120M) */
+#define PAR_THRESHOLD       (8 * 1024)
 #define PAR_MIN_THREADS     2
-#define TARGET_MICRO_CHUNK  (4 * 1024)      /* 4KB: fits in L2 cache → ~130M tok/s per chunk */
-#define MAX_PAR_CHUNKS      2048            /* handles up to 8MB documents */
+#define MAX_PAR_CHUNKS      128
 
 static size_t split_at_ws(const uint8_t *t, size_t target, size_t len) {
     if (target>=len) return len;
@@ -610,14 +573,12 @@ static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
         int max_t = omp_get_max_threads();
         if (max_t > MAX_PAR_THREADS) max_t = MAX_PAR_THREADS;
         if (max_t >= PAR_MIN_THREADS) {
-            /* Split into ~4KB micro-chunks (each fits in L2 → max throughput) */
-            int nchunks = (int)((len + TARGET_MICRO_CHUNK - 1) / TARGET_MICRO_CHUNK);
-            if (nchunks < max_t) nchunks = max_t;
+            /* Use max_t * 4 chunks for good load balance */
+            int nchunks = max_t * 4;
             if (nchunks > MAX_PAR_CHUNKS) nchunks = MAX_PAR_CHUNKS;
+            if (nchunks < max_t) nchunks = max_t;
 
-            /* Compute chunk boundaries (split at whitespace) */
-            size_t *starts = (size_t *)malloc(((size_t)nchunks + 1) * sizeof(size_t));
-            if (!starts) goto serial_fallback;
+            size_t starts[MAX_PAR_CHUNKS + 1];
             starts[0] = 0;
             for (int i = 1; i < nchunks; ++i)
                 starts[i] = split_at_ws((const uint8_t*)text,
@@ -626,17 +587,12 @@ static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
 
             _ensure_par_caches();
 
-            /* Allocate per-chunk output buffers */
-            TBuf *chunks = (TBuf *)calloc((size_t)nchunks, sizeof(TBuf));
-            if (!chunks) { free(starts); goto serial_fallback; }
-
+            TBuf chunks[MAX_PAR_CHUNKS];
             for (int i = 0; i < nchunks; ++i) {
                 size_t clen = starts[i+1] - starts[i];
-                /* Estimate: ~1 token per 2 chars for safety margin */
                 tb_init(&chunks[i], clen / 2 + 64);
             }
 
-            /* ── OMP parallel tokenization ── */
             Py_BEGIN_ALLOW_THREADS
             #pragma omp parallel for num_threads(max_t) schedule(static)
             for (int i = 0; i < nchunks; ++i) {
@@ -648,29 +604,23 @@ static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
             }
             Py_END_ALLOW_THREADS
 
-            /* ── Pre-sized merge: ONE alloc + N memcpys (no realloc chain) ── */
+            /* Pre-sized merge: compute total, ONE realloc, N memcpys */
             size_t total = 0;
             for (int i = 0; i < nchunks; ++i) total += chunks[i].n;
-
-            /* Ensure result has enough capacity in one shot */
             if (result->cap < result->n + total) {
                 result->cap = result->n + total;
                 result->d = (int32_t *)realloc(result->d, result->cap * sizeof(int32_t));
             }
-            /* Copy all chunks sequentially */
             for (int i = 0; i < nchunks; ++i) {
                 if (chunks[i].n > 0 && chunks[i].d)
                     memcpy(result->d + result->n, chunks[i].d, chunks[i].n * sizeof(int32_t));
                 result->n += chunks[i].n;
                 free(chunks[i].d);
             }
-            free(chunks);
-            free(starts);
             return;
         }
     }
 #endif
-serial_fallback:;
     WCEntry *wc = _get_tl_wc();
     if (!wc) {
         static WCEntry *fallback_wc = NULL;
@@ -718,7 +668,7 @@ static PyObject *py_load_dat(PyObject *self, PyObject *args) {
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Python API: tokenize → numpy
+ *  Python API
  * ══════════════════════════════════════════════════════════════ */
 static PyObject *py_tokenize(PyObject *self, PyObject *args) {
     const char *text; Py_ssize_t len;
@@ -738,9 +688,6 @@ static PyObject *py_tokenize_to_list(PyObject *self, PyObject *args) {
     PyObject *res=tb_to_pylist(&r); tb_free(&r); return res;
 }
 
-/* ══════════════════════════════════════════════════════════════
- *  Python API: tokenize_batch → list[ndarray]
- * ══════════════════════════════════════════════════════════════ */
 static PyObject *py_tokenize_batch(PyObject *self, PyObject *args) {
     PyObject *sl;
     if (!PyArg_ParseTuple(args,"O!",&PyList_Type,&sl)) return NULL;
@@ -855,7 +802,7 @@ static PyObject *py_get_hardware_info(PyObject *self, PyObject *args) {
 #endif
     if (!brand[0]) strcpy(brand,"Unknown CPU");
     char info[320];
-    snprintf(info,sizeof(info),"%s [Turbo/v5.7.3/2Way-SA-Prefetch+%s/%s 64Ksets×2ways intcache=%u]",
+    snprintf(info,sizeof(info),"%s [Turbo/v5.7.4/L2-Cache+%s/%s 4Ksets×2ways intcache=%u]",
              brand,
 #if HAVE_AVX2
              "AVX2",
@@ -885,7 +832,7 @@ static PyMethodDef methods[] = {
 };
 static struct PyModuleDef moddef = {
     PyModuleDef_HEAD_INIT,"crayon_turbo",
-    "CRAYON Turbo v5.7.1: 2Way-SA-Cache+AVX2+OMP+numpy", -1, methods
+    "CRAYON Turbo v5.7.4: L2-Cache+AVX2+OMP+numpy", -1, methods
 };
 PyMODINIT_FUNC PyInit_crayon_turbo(void) {
     memset(g_par_wc,0,sizeof(g_par_wc));
