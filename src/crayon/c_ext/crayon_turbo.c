@@ -1,5 +1,5 @@
 /*
- * CRAYON TURBO ENGINE v5.7.1 (2-Way SA Cache, Unified 32B Entry, Aggressive OMP)
+ * CRAYON TURBO ENGINE v5.7.2 (2-Way SA + Prefetch + OMP@16KB)
  * ==============================================================================
  * Target: >= 100M tokens/sec on all real-world text, all sizes.
  *
@@ -405,6 +405,24 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
                 WCEntry *e0 = &wc[si * 2];
                 WCEntry *e1 = e0 + 1;
 
+                /* Prefetch cache line NOW. Even a few cycles helps hide L3 latency
+                 * since the compiler will schedule other work between here and access. */
+                __builtin_prefetch(e0, 0, 3);
+
+                /* Lookahead: prefetch the NEXT word's cache set while we process this one.
+                 * This hides the full L3 latency (~40 cycles) for the next iteration. */
+                if (__builtin_expect(we < len, 1)) {
+                    /* Skip separator chars to find next word start */
+                    size_t nws = we;
+                    while (nws < len && !isw_lut[text[nws]]) nws++;
+                    if (nws + 4 <= len) {
+                        /* Quick 4-byte hash for prefetch (doesn't need to be exact) */
+                        uint32_t ph; memcpy(&ph, text + nws, 4);
+                        uint32_t nsi = (uint32_t)((ph * 2654435761U) >> 16) & WC_SET_MASK;
+                        __builtin_prefetch(&wc[nsi * 2], 0, 3);
+                    }
+                }
+
                 /* Check way 0 */
                 if (__builtin_expect(e0->key == key, 1)) {
                     if (__builtin_expect(e0->ntoks > 0, 1)) {
@@ -565,7 +583,7 @@ static PyObject *tb_to_pylist(const TBuf *b) {
 /* ══════════════════════════════════════════════════════════════
  *  OMP Parallel Dispatch (aggressive: 8KB threshold, 16KB chunks)
  * ══════════════════════════════════════════════════════════════ */
-#define PAR_THRESHOLD    (64 * 1024)    /* 64KB: below this, serial is faster */
+#define PAR_THRESHOLD    (16 * 1024)    /* 16KB: parallelize early to compensate L3 latency */
 #define PAR_MIN_THREADS  2
 #define MAX_PAR_CHUNKS   64
 
@@ -804,7 +822,7 @@ static PyObject *py_get_hardware_info(PyObject *self, PyObject *args) {
 #endif
     if (!brand[0]) strcpy(brand,"Unknown CPU");
     char info[320];
-    snprintf(info,sizeof(info),"%s [Turbo/v5.7.1/2Way-SA+%s/%s 64Ksets×2ways intcache=%u]",
+    snprintf(info,sizeof(info),"%s [Turbo/v5.7.2/2Way-SA-Prefetch+%s/%s 64Ksets×2ways intcache=%u]",
              brand,
 #if HAVE_AVX2
              "AVX2",
