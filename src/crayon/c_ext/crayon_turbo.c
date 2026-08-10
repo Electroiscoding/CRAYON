@@ -1,5 +1,5 @@
 /*
- * CRAYON TURBO ENGINE v5.7.13 (L2-Resident Cache + Clean OMP)
+ * CRAYON TURBO ENGINE v5.7.14 (L2-Resident Cache + Clean OMP)
  * ==============================================================================
  * Target: >= 100M tokens/sec on all real-world text, all sizes.
  *
@@ -315,7 +315,7 @@ static inline int dat_match(const uint8_t * restrict t, size_t end, size_t pos,
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Core Tokenize Loop  (v5.7.13 — L2-resident cache, no prefetch overhead)
+ *  Core Tokenize Loop  (v5.7.14 — L2-resident cache, no prefetch overhead)
  * ══════════════════════════════════════════════════════════════ */
 static void tokenize_one(const uint8_t * restrict text, size_t len,
                           TBuf * restrict out, WCEntry * restrict wc) {
@@ -565,7 +565,7 @@ static size_t split_at_ws(const uint8_t *t, size_t target, size_t len) {
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Persistent Worker Thread  (v5.7.13 — replaces OMP fork/join)
+ *  Persistent Worker Thread  (v5.7.14 — replaces OMP fork/join)
  *  ──────────────────────────────────────────────────────────────
  *  OMP barrier wakeup = ~170µs measured overhead on Colab Xeon.
  *  A persistent pthread with semaphore = ~2-5µs wakeup latency.
@@ -588,35 +588,19 @@ typedef struct {
 static SplitWorker *g_worker = NULL;
 static pthread_t    g_worker_tid;
 
-/* RDTSC-based spin: ensures consistent spin window regardless of CPU speed.
- * 100M cycles ≈ 28ms on AMD 3.5GHz, ≈ 43ms on Intel 2.3GHz.
- * Covers even the longest benchmark calls (4MB ≈ 20ms). */
-#ifdef __x86_64__
-  static inline uint64_t _crayon_rdtsc(void) {
-      uint32_t lo, hi;
-      __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-      return ((uint64_t)hi << 32) | lo;
-  }
-  #define SPIN_TSC_BUDGET  100000000ULL  /* 100M cycles */
-#else
-  #define SPIN_TSC_BUDGET  0ULL
-#endif
-
 static void *worker_thread_fn(void *arg) {
     SplitWorker *w = (SplitWorker *)arg;
     while (1) {
-#ifdef __x86_64__
-        /* Spin for up to SPIN_TSC_BUDGET cycles (covers calls up to ~40ms) */
-        uint64_t t0 = _crayon_rdtsc();
-        int sc = 0;
-        while (1) {
+        /* Simple pause-based spin — avoids VM-exit overhead from RDTSC.
+         * 200K iterations × ~140 cycles/pause ≈ 12ms on Intel 2.2GHz,
+         * ≈ 0.86ms on AMD Zen2 3.5GHz. Covers all benchmark inter-call
+         * intervals for sizes up to ~128KB on Intel. For larger sizes the
+         * futex wakeup path (~10-50µs) adds <0.5% overhead to call time. */
+        for (int i = 0; i < 200000; i++) {
             if (sem_trywait(&w->sem_work) == 0) goto got_work;
             _mm_pause();
-            /* Check elapsed time every 64 pauses to keep RDTSC overhead < 1% */
-            if ((++sc & 63) == 0 && (_crayon_rdtsc() - t0) > SPIN_TSC_BUDGET) break;
         }
-#endif
-        /* Spin budget exhausted: block (releases CPU) */
+        /* Spin exhausted: block until work arrives (yields CPU entirely) */
         sem_wait(&w->sem_work);
         got_work:
         if (!w->alive) return NULL;
@@ -900,7 +884,7 @@ static PyObject *py_get_hardware_info(PyObject *self, PyObject *args) {
 #endif
     if (!brand[0]) strcpy(brand,"Unknown CPU");
     char info[320];
-    snprintf(info,sizeof(info),"%s [Turbo/v5.7.13/64K-SA+%s/%s 64Ksets×2ways intcache=%u]",
+    snprintf(info,sizeof(info),"%s [Turbo/v5.7.14/64K-SA+%s/%s 64Ksets×2ways intcache=%u]",
              brand,
 #if HAVE_AVX2
              "AVX2",
@@ -930,7 +914,7 @@ static PyMethodDef methods[] = {
 };
 static struct PyModuleDef moddef = {
     PyModuleDef_HEAD_INIT,"crayon_turbo",
-    "CRAYON Turbo v5.7.13: 64K-SA+AVX2+OMP+numpy", -1, methods
+    "CRAYON Turbo v5.7.14: 64K-SA+AVX2+OMP+numpy", -1, methods
 };
 PyMODINIT_FUNC PyInit_crayon_turbo(void) {
     memset(g_par_wc,0,sizeof(g_par_wc));
