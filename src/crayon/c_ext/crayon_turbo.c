@@ -1,5 +1,5 @@
 /*
- * CRAYON TURBO ENGINE v5.7.8 (L2-Resident Cache + Clean OMP)
+ * CRAYON TURBO ENGINE v5.7.9 (L2-Resident Cache + Clean OMP)
  * ==============================================================================
  * Target: >= 100M tokens/sec on all real-world text, all sizes.
  *
@@ -30,6 +30,9 @@
 #ifdef _OPENMP
   #include <omp.h>
 #endif
+#include <pthread.h>
+#include <semaphore.h>
+#include <stdatomic.h>
 
 /* ── SIMD ────────────────────────────────────────────────────── */
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
@@ -312,7 +315,7 @@ static inline int dat_match(const uint8_t * restrict t, size_t end, size_t pos,
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Core Tokenize Loop  (v5.7.8 — L2-resident cache, no prefetch overhead)
+ *  Core Tokenize Loop  (v5.7.9 — L2-resident cache, no prefetch overhead)
  * ══════════════════════════════════════════════════════════════ */
 static void tokenize_one(const uint8_t * restrict text, size_t len,
                           TBuf * restrict out, WCEntry * restrict wc) {
@@ -550,90 +553,148 @@ static PyObject *tb_to_pylist(const TBuf *b) {
     return lst;
 }
 
-/* ══════════════════════════════════════════════════════════════
-/* ══════════════════════════════════════════════════════════════
- *  OMP Parallel Dispatch  (v5.7.8 — high threshold, coarse chunks)
- *  ──────────────────────────────────────────────────────────────
- *  OMP fork/join on Colab Xeon costs ~1-3ms per call. That overhead
- *  only pays off for texts >512KB where parallel work = ~5ms.
- *  Below 512KB, serial is faster. Use max_t chunks (not max_t*4).
- * ══════════════════════════════════════════════════════════════ */
-#define PAR_THRESHOLD       (512 * 1024)   /* 512KB: OMP overhead only pays off here */
-#define PAR_MIN_THREADS     2
-#define MAX_PAR_CHUNKS      MAX_PAR_THREADS
-
 static size_t split_at_ws(const uint8_t *t, size_t target, size_t len) {
-    if (target>=len) return len;
-    size_t p=target;
-    size_t lo=(target>64)?target-64:0;
-    while (p>lo) {
-        if (t[p]==' '||t[p]=='\n'||t[p]=='\t'||t[p]=='\r') return p+1;
+    if (target >= len) return len;
+    size_t p = target;
+    size_t lo = (target > 64) ? target - 64 : 0;
+    while (p > lo) {
+        if (t[p]==' ' || t[p]=='\n' || t[p]=='\t' || t[p]=='\r') return p+1;
         p--;
     }
     return target;
 }
 
-static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
-#ifdef _OPENMP
-    if (len >= PAR_THRESHOLD) {
-        int max_t = omp_get_max_threads();
-        if (max_t > MAX_PAR_THREADS) max_t = MAX_PAR_THREADS;
-        if (max_t >= PAR_MIN_THREADS) {
-            /* Use exactly max_t chunks — coarse split avoids OMP overhead */
-            int nchunks = max_t;
-            if (nchunks > MAX_PAR_CHUNKS) nchunks = MAX_PAR_CHUNKS;
+/* ══════════════════════════════════════════════════════════════
+ *  Persistent Worker Thread  (v5.7.9 — replaces OMP fork/join)
+ *  ──────────────────────────────────────────────────────────────
+ *  OMP barrier wakeup = ~170µs measured overhead on Colab Xeon.
+ *  A persistent pthread with semaphore = ~2-5µs wakeup latency.
+ *  This makes 2-thread splitting beneficial at ≥8KB instead of
+ *  ≥340KB (old break-even with OMP overhead).
+ * ══════════════════════════════════════════════════════════════ */
 
-            size_t starts[MAX_PAR_CHUNKS + 1];
-            starts[0] = 0;
-            for (int i = 1; i < nchunks; ++i)
-                starts[i] = split_at_ws((const uint8_t*)text,
-                                        len * (size_t)i / (size_t)nchunks, len);
-            starts[nchunks] = len;
+#define WORKER_SPLIT_THRESHOLD  (8 * 1024)   /* 8KB: start using worker */
 
-            _ensure_par_caches();
+typedef struct {
+    sem_t       sem_work;   /* main → worker: work ready */
+    sem_t       sem_done;   /* worker → main: work done  */
+    const uint8_t *text;
+    size_t         len;
+    WCEntry       *wc;
+    TBuf           out;
+    volatile int   alive;
+} SplitWorker;
 
-            TBuf chunks[MAX_PAR_THREADS];
-            for (int i = 0; i < nchunks; ++i) {
-                size_t clen = starts[i+1] - starts[i];
-                tb_init(&chunks[i], clen / 2 + 64);
-            }
+static SplitWorker *g_worker = NULL;
+static pthread_t    g_worker_tid;
 
-            Py_BEGIN_ALLOW_THREADS
-            #pragma omp parallel for num_threads(max_t) schedule(static)
-            for (int i = 0; i < nchunks; ++i) {
-                int tid = omp_get_thread_num();
-                if (tid >= MAX_PAR_THREADS) tid = 0;
-                WCEntry *twc = g_par_wc[tid] ? g_par_wc[tid] : g_par_wc[0];
-                size_t s = starts[i], e = starts[i+1];
-                tokenize_one((const uint8_t*)text + s, e - s, &chunks[i], twc);
-            }
-            Py_END_ALLOW_THREADS
-
-            /* Pre-sized merge: compute total, ONE realloc, N memcpys */
-            size_t total = 0;
-            for (int i = 0; i < nchunks; ++i) total += chunks[i].n;
-            if (result->cap < result->n + total) {
-                result->cap = result->n + total;
-                result->d = (int32_t *)realloc(result->d, result->cap * sizeof(int32_t));
-            }
-            for (int i = 0; i < nchunks; ++i) {
-                if (chunks[i].n > 0 && chunks[i].d)
-                    memcpy(result->d + result->n, chunks[i].d, chunks[i].n * sizeof(int32_t));
-                result->n += chunks[i].n;
-                free(chunks[i].d);
-            }
-            return;
-        }
-    }
+static void *worker_thread_fn(void *arg) {
+    SplitWorker *w = (SplitWorker *)arg;
+    while (1) {
+        /* Wait for work — brief spin then nanosleep to balance latency vs CPU */
+        for (int i = 0; i < 200000; i++) {
+            if (sem_trywait(&w->sem_work) == 0) goto got_work;
+#if HAVE_AVX2
+            _mm_pause();
 #endif
-    WCEntry *wc = _get_tl_wc();
-    if (!wc) {
-        static WCEntry *fallback_wc = NULL;
-        if (!fallback_wc) fallback_wc = (WCEntry *)calloc(WC_TOTAL, sizeof(WCEntry));
-        tokenize_one((const uint8_t*)text, len, result, fallback_wc);
+        }
+        /* Spin exhausted — fall back to blocking sem_wait (0 CPU burn) */
+        sem_wait(&w->sem_work);
+        got_work:
+        if (!w->alive) return NULL;
+        /* Do the tokenization work */
+        w->out.n = 0;
+        tokenize_one(w->text, w->len, &w->out, w->wc);
+        sem_post(&w->sem_done);
+    }
+}
+
+static void _start_worker(void) {
+    if (g_worker) return;  /* already started */
+    g_worker = (SplitWorker *)calloc(1, sizeof(SplitWorker));
+    if (!g_worker) return;
+    sem_init(&g_worker->sem_work, 0, 0);
+    sem_init(&g_worker->sem_done, 0, 0);
+    tb_init(&g_worker->out, 65536);
+    g_worker->alive = 1;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+    if (pthread_create(&g_worker_tid, &attr, worker_thread_fn, g_worker) != 0) {
+        /* Thread creation failed — free and set NULL (fall back to serial) */
+        free(g_worker->out.d);
+        sem_destroy(&g_worker->sem_work);
+        sem_destroy(&g_worker->sem_done);
+        free(g_worker);
+        g_worker = NULL;
+    }
+    pthread_attr_destroy(&attr);
+}
+
+static void _stop_worker(void) {
+    if (!g_worker) return;
+    g_worker->alive = 0;
+    sem_post(&g_worker->sem_work);   /* wake thread so it can exit */
+    pthread_join(g_worker_tid, NULL);
+    sem_destroy(&g_worker->sem_work);
+    sem_destroy(&g_worker->sem_done);
+    free(g_worker->out.d);
+    free(g_worker);
+    g_worker = NULL;
+}
+
+static void tokenize_dispatch(const char *text, size_t len, TBuf *result) {
+    _ensure_par_caches();
+    WCEntry *wc0 = g_par_wc[0] ? g_par_wc[0] : _get_tl_wc();
+    if (!wc0) {
+        static WCEntry *fb = NULL;
+        if (!fb) fb = (WCEntry*)calloc(WC_TOTAL, sizeof(WCEntry));
+        wc0 = fb;
+    }
+
+    if (g_worker && len >= WORKER_SPLIT_THRESHOLD) {
+        /* ── 2-thread split via persistent worker ── */
+        WCEntry *wc1 = g_par_wc[1] ? g_par_wc[1] : wc0;
+
+        /* Find clean midpoint at whitespace boundary */
+        size_t mid = split_at_ws((const uint8_t*)text, len / 2, len);
+
+        /* Ensure worker output buffer is large enough */
+        size_t need = (len - mid) / 2 + 256;
+        if (g_worker->out.cap < need) {
+            g_worker->out.cap = need;
+            g_worker->out.d = (int32_t *)realloc(g_worker->out.d,
+                                                   need * sizeof(int32_t));
+        }
+
+        /* Post work to worker (second half) */
+        g_worker->text = (const uint8_t*)text + mid;
+        g_worker->len  = len - mid;
+        g_worker->wc   = wc1;
+        sem_post(&g_worker->sem_work);
+
+        /* Main thread: process first half (runs in parallel with worker) */
+        tokenize_one((const uint8_t*)text, mid, result, wc0);
+
+        /* Wait for worker to finish */
+        sem_wait(&g_worker->sem_done);
+
+        /* Merge worker output into result */
+        size_t wn = g_worker->out.n;
+        if (wn > 0) {
+            if (result->cap < result->n + wn) {
+                result->cap = result->n + wn;
+                result->d   = (int32_t *)realloc(result->d,
+                                                   result->cap * sizeof(int32_t));
+            }
+            memcpy(result->d + result->n, g_worker->out.d, wn * sizeof(int32_t));
+            result->n += wn;
+        }
         return;
     }
-    tokenize_one((const uint8_t*)text, len, result, wc);
+
+    /* Serial fallback */
+    tokenize_one((const uint8_t*)text, len, result, wc0);
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -669,6 +730,10 @@ static PyObject *py_load_dat(PyObject *self, PyObject *args) {
     int32_t maxv=0;
     for (uint32_t i=0;i<sz;++i) if (g_values[i]>maxv) maxv=g_values[i];
     if (_build_intcache((uint32_t)(maxv+2))!=0) { PyErr_NoMemory(); return NULL; }
+    /* Start/restart persistent worker thread now that caches are ready */
+    _stop_worker();   /* stop old worker if any (e.g., on reload) */
+    _ensure_par_caches();
+    _start_worker();
     return PyLong_FromUnsignedLong(sz);
 }
 
@@ -807,7 +872,7 @@ static PyObject *py_get_hardware_info(PyObject *self, PyObject *args) {
 #endif
     if (!brand[0]) strcpy(brand,"Unknown CPU");
     char info[320];
-    snprintf(info,sizeof(info),"%s [Turbo/v5.7.8/64K-SA+%s/%s 64Ksets×2ways intcache=%u]",
+    snprintf(info,sizeof(info),"%s [Turbo/v5.7.9/64K-SA+%s/%s 64Ksets×2ways intcache=%u]",
              brand,
 #if HAVE_AVX2
              "AVX2",
@@ -837,7 +902,7 @@ static PyMethodDef methods[] = {
 };
 static struct PyModuleDef moddef = {
     PyModuleDef_HEAD_INIT,"crayon_turbo",
-    "CRAYON Turbo v5.7.8: 64K-SA+AVX2+OMP+numpy", -1, methods
+    "CRAYON Turbo v5.7.9: 64K-SA+AVX2+OMP+numpy", -1, methods
 };
 PyMODINIT_FUNC PyInit_crayon_turbo(void) {
     memset(g_par_wc,0,sizeof(g_par_wc));
