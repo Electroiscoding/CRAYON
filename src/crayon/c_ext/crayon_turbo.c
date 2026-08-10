@@ -1,5 +1,5 @@
 /*
- * CRAYON TURBO ENGINE v5.7.4 (L2-Resident Cache + Clean OMP)
+ * CRAYON TURBO ENGINE v5.7.7 (L2-Resident Cache + Clean OMP)
  * ==============================================================================
  * Target: >= 100M tokens/sec on all real-world text, all sizes.
  *
@@ -60,11 +60,11 @@
  *  With Zipf word frequency distribution, top 8K words cover
  *  ~95% of all word occurrences → 95% L2 hit rate.
  * ══════════════════════════════════════════════════════════════ */
-#define WC_SETS_SHIFT   12
-#define WC_SETS         (1u << WC_SETS_SHIFT)   /* 4K sets */
+#define WC_SETS_SHIFT   16
+#define WC_SETS         (1u << WC_SETS_SHIFT)   /* 64K sets */
 #define WC_SET_MASK     (WC_SETS - 1)
 #define WC_WAYS         2
-#define WC_TOTAL        (WC_SETS * WC_WAYS)     /* 8K entries = 256KB */
+#define WC_TOTAL        (WC_SETS * WC_WAYS)     /* 128K entries = 4MB total */
 
 typedef struct {
     uint64_t key;       /* hash with len in top 8 bits; 0 = unused */
@@ -312,7 +312,7 @@ static inline int dat_match(const uint8_t * restrict t, size_t end, size_t pos,
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Core Tokenize Loop  (v5.7.4 — L2-resident cache, no prefetch overhead)
+ *  Core Tokenize Loop  (v5.7.7 — L2-resident cache, no prefetch overhead)
  * ══════════════════════════════════════════════════════════════ */
 static void tokenize_one(const uint8_t * restrict text, size_t len,
                           TBuf * restrict out, WCEntry * restrict wc) {
@@ -348,47 +348,100 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
         int isw = isw_lut[c0];
 
         if (isw) {
-            /* ── Word span ── */
+            /* ── Word span — SWAR one-pass scan+hash ── */
             size_t ws = pos;
-            size_t we = find_nonword(text, ws + 1, len);
-            size_t wl = we - ws;
-            pos = we;
+            uint64_t key;
+            size_t wl, we;
 
-            if (__builtin_expect(wl <= MAX_WORD_LEN, 1)) {
-                /* 2-char fast path via pair LUT */
-                if (__builtin_expect(wl == 2, 0)) {
-                    uint16_t pair = ((uint16_t)text[ws] << 8) | (uint8_t)text[ws + 1];
-                    int32_t pt = g_pair_lut[pair];
-                    if (__builtin_expect(pt >= 0, 1)) {
-                        FAST_PUSH(pt);
-                        FUSE_SEPARATOR
-                        continue;
-                    }
-                }
+            /* SWAR: load 8 bytes, detect non-word chars branchlessly.
+             * Check all 8 bytes simultaneously using u64 arithmetic.
+             * For each byte b: b is word char IFF:
+             *   (b-'0')<=9  OR  (b|32)-'a'<=25  OR  b=='_'  OR  b>=0x80
+             * We encode the non-word mask and use ctz to find word end.
+             * This eliminates the find_nonword + word_key dependency chain. */
+            if (__builtin_expect(ws + 8 <= len, 1)) {
+                uint64_t v8;
+                memcpy(&v8, text + ws, 8);
 
-                /* Compute hash */
-                uint64_t key;
-                if (__builtin_expect(ws + 16 <= len, 1)) {
-                    uint64_t v; memcpy(&v, text + ws, 8);
-                    static const uint64_t M[9] = {0,0xFF,0xFFFF,0xFFFFFF,0xFFFFFFFFULL,
-                        0xFFFFFFFFFFULL,0xFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL};
-                    if (__builtin_expect(wl <= 7, 1)) {
-                        key = (v & M[wl]) | ((uint64_t)wl << 56);
-                    } else if (__builtin_expect(wl <= 15, 1)) {
+                /* SWAR isword check: for each byte b, set bit 7 if b is NOT a word char.
+                 * Word chars: a-z A-Z 0-9 _ and high bytes (>=0x80, UTF-8 continuation).
+                 * Non-word chars: everything else (space, punct, newline, etc.)
+                 * Strategy: check against LUT in parallel using SWAR range checks. */
+
+                /* Lowercase a-z: (b | 0x20) - 'a' <= 25 */
+                uint64_t fold = v8 | 0x2020202020202020ULL;
+                uint64_t lc   = fold - 0x6161616161616161ULL;          /* b - 'a' */
+                uint64_t lchi = 0x7a7a7a7a7a7a7a7aULL - fold;         /* 'z' - b */
+                /* hi bit set IFF NOT in [a,z] */
+                uint64_t not_lc = (lc | lchi) & 0x8080808080808080ULL;
+
+                /* Digit 0-9: b-'0' <= 9 */
+                uint64_t dg   = v8 - 0x3030303030303030ULL;
+                uint64_t dghi = 0x3939393939393939ULL - v8;
+                uint64_t not_dg = (dg | dghi) & 0x8080808080808080ULL;
+
+                /* Underscore: b == '_' (0x5f) → b ^ 0x5f == 0 → -(b^0x5f) has hi bit clear */
+                uint64_t us   = v8 ^ 0x5f5f5f5f5f5f5f5fULL;
+                /* hi bit 0 IFF b == '_' → invert: hi bit 1 IFF b != '_' */
+                uint64_t not_us = ((us | (0 - us)) | us) & 0x8080808080808080ULL;
+                /* Simpler: non-zero in any bit position means not '_' */
+                /* Detect zero bytes: ~((us|(us-0x0101...))>>7) & 0x0101... */
+                uint64_t us_z = ~(us | (us - 0x0101010101010101ULL)) & 0x8080808080808080ULL;
+                not_us = ~us_z & 0x8080808080808080ULL;
+
+                /* High bytes (>=0x80): b & 0x80 != 0 → always word char */
+                uint64_t hi_byte = v8 & 0x8080808080808080ULL;
+
+                /* A byte is a NON-word char IFF: not_lc & not_dg & not_us & (b < 0x80) */
+                uint64_t nonword_mask = not_lc & not_dg & not_us & ~hi_byte;
+
+                /* Convert byte-position mask to bit-position mask (LSB per byte) */
+                /* nonword_mask has 0x80 in byte positions that are non-word chars.
+                 * We need to find the first such byte. */
+                if (__builtin_expect(nonword_mask == 0, 1)) {
+                    /* All 8 bytes are word chars — word is ≥8 chars, use AVX2/scalar path */
+                    we = find_nonword(text, ws + 8, len);
+                    wl = we - ws;
+                    /* Long-word hash (≥8 chars) */
+                    if (__builtin_expect(wl <= 15, 1)) {
                         uint64_t v2; memcpy(&v2, text + ws + 8, 8);
-                        v2 &= M[wl - 8];
-                        uint64_t h = v ^ (v2 * 1099511628211ULL);
+                        static const uint64_t M2[9] = {0,0xFF,0xFFFF,0xFFFFFF,0xFFFFFFFFULL,
+                            0xFFFFFFFFFFULL,0xFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL};
+                        v2 &= M2[wl - 8];
+                        uint64_t h = v8 ^ (v2 * 1099511628211ULL);
                         h ^= (h >> 33); h *= 0xff51afd7ed558ccdULL; h ^= (h >> 33);
                         key = (h & 0x00FFFFFFFFFFFFFFULL) | ((uint64_t)wl << 56);
                     } else {
                         key = word_key(text + ws, wl);
                     }
                 } else {
-                    key = word_key(text + ws, wl);
+                    /* Found non-word byte within first 8 — short word (1-7 chars).
+                     * ctz on the mask gives bit offset; divide by 8 gives byte offset. */
+                    /* Map 0x80 bits to positions: shift right 7 to get 0x01 per byte,
+                     * then use the per-byte structure. Use a byte-collapse trick: */
+                    /* Collapse to a u8 where bit i = byte i has nonword char */
+                    uint64_t collapsed = (nonword_mask >> 7) * 0x0002040810204081ULL;
+                    /* collapsed >> 56 gives the packed 8-bit mask of non-word bytes */
+                    unsigned nwbyte = (unsigned)(collapsed >> 56) & 0xFF;
+                    if (nwbyte == 0) nwbyte = 0xFF; /* safety */
+                    wl = (size_t)__builtin_ctz(nwbyte);  /* first non-word byte index */
+                    we = ws + wl;
+
+                    /* Hash: for short words, just mask the 8 bytes we already loaded */
+                    static const uint64_t M[9] = {0,0xFF,0xFFFF,0xFFFFFF,0xFFFFFFFFULL,
+                        0xFFFFFFFFFFULL,0xFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL};
+                    key = (v8 & M[wl]) | ((uint64_t)wl << 56);
                 }
+            } else {
+                /* Near end of buffer: slow scalar scan */
+                we = find_nonword(text, ws + 1, len);
+                wl = we - ws;
+                key = word_key(text + ws, wl);
+            }
+            pos = we;
 
                 /* 2-way set-associative lookup (entire set in 1 cache line) */
-                uint32_t si = (uint32_t)((key * 11400714819323198485ULL) >> 52) & WC_SET_MASK;
+                uint32_t si = (uint32_t)((key * 11400714819323198485ULL) >> 48) & WC_SET_MASK;
                 WCEntry *e0 = &wc[si * 2];
                 WCEntry *e1 = e0 + 1;
 
@@ -447,22 +500,13 @@ slow_word:;
                         e0->ids[1] = (cnt >= 2) ? ts[1] : -1;
                         e0->ids[2] = (cnt >= 3) ? ts[2] : -1;
                         e0->ids[3] = (cnt == 4) ? ts[3] : -1;
-                        FUSE_SEPARATOR
+                        if (cnt >= 1 && cnt <= 4) { FUSE_SEPARATOR }
                     } else {
                         e0->ntoks = 0;
                         e0->ids[0] = -1; e0->ids[1] = -1;
                         e0->ids[2] = -1; e0->ids[3] = -1;
                     }
                 }
-            } else {
-                /* Word > MAX_WORD_LEN: raw DAT */
-                size_t wp = ws;
-                while (wp < we) {
-                    int32_t tid; int ml = dat_match(text, we, wp, &tid);
-                    if (ml > 0) { FAST_PUSH(tid); wp += ml; }
-                    else        { FAST_PUSH(UNK_ID); wp++; }
-                }
-            }
         } else {
             /* ── Non-word run ── */
             if (__builtin_expect(pos + 1 < len, 1)) {
@@ -551,7 +595,7 @@ static PyObject *tb_to_pylist(const TBuf *b) {
 
 /* ══════════════════════════════════════════════════════════════
 /* ══════════════════════════════════════════════════════════════
- *  OMP Parallel Dispatch  (v5.7.6 — high threshold, coarse chunks)
+ *  OMP Parallel Dispatch  (v5.7.7 — high threshold, coarse chunks)
  *  ──────────────────────────────────────────────────────────────
  *  OMP fork/join on Colab Xeon costs ~1-3ms per call. That overhead
  *  only pays off for texts >512KB where parallel work = ~5ms.
@@ -806,7 +850,7 @@ static PyObject *py_get_hardware_info(PyObject *self, PyObject *args) {
 #endif
     if (!brand[0]) strcpy(brand,"Unknown CPU");
     char info[320];
-    snprintf(info,sizeof(info),"%s [Turbo/v5.7.6/L2-Cache+%s/%s 4Ksets×2ways intcache=%u]",
+    snprintf(info,sizeof(info),"%s [Turbo/v5.7.7/64K-SA+%s/%s 64Ksets×2ways intcache=%u]",
              brand,
 #if HAVE_AVX2
              "AVX2",
@@ -836,7 +880,7 @@ static PyMethodDef methods[] = {
 };
 static struct PyModuleDef moddef = {
     PyModuleDef_HEAD_INIT,"crayon_turbo",
-    "CRAYON Turbo v5.7.4: L2-Cache+AVX2+OMP+numpy", -1, methods
+    "CRAYON Turbo v5.7.7: 64K-SA+AVX2+OMP+numpy", -1, methods
 };
 PyMODINIT_FUNC PyInit_crayon_turbo(void) {
     memset(g_par_wc,0,sizeof(g_par_wc));
