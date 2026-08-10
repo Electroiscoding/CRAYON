@@ -1,5 +1,5 @@
 /*
- * CRAYON TURBO ENGINE v5.7.11 (L2-Resident Cache + Clean OMP)
+ * CRAYON TURBO ENGINE v5.7.12 (L2-Resident Cache + Clean OMP)
  * ==============================================================================
  * Target: >= 100M tokens/sec on all real-world text, all sizes.
  *
@@ -315,7 +315,7 @@ static inline int dat_match(const uint8_t * restrict t, size_t end, size_t pos,
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Core Tokenize Loop  (v5.7.11 — L2-resident cache, no prefetch overhead)
+ *  Core Tokenize Loop  (v5.7.12 — L2-resident cache, no prefetch overhead)
  * ══════════════════════════════════════════════════════════════ */
 static void tokenize_one(const uint8_t * restrict text, size_t len,
                           TBuf * restrict out, WCEntry * restrict wc) {
@@ -344,16 +344,6 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
         int32_t _lt = blut[_nc]; \
         if (__builtin_expect(_lt >= 0, 1)) { FAST_PUSH(_lt); pos++; } \
         else break; \
-    }
-
-/* Prefetch next word's cache line while processing current word.
- * After FUSE_SEPARATOR, pos is at the next word start (common case).
- * Prefetching hides the ~30-cycle L3 latency for large texts. */
-#define PREFETCH_NEXT_WORD \
-    if (__builtin_expect(pos + 8 <= len, 1)) { \
-        uint64_t _pqk; memcpy(&_pqk, text + pos, 8); \
-        uint32_t _psi = (uint32_t)((_pqk * 11400714819323198485ULL) >> 48) & WC_SET_MASK; \
-        __builtin_prefetch(wc + _psi * 2, 0, 1); \
     }
 
     while (pos < len) {
@@ -415,7 +405,6 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
                         if (nt >= 3) FAST_PUSH(e0->ids[2]);
                         if (nt == 4) FAST_PUSH(e0->ids[3]);
                         FUSE_SEPARATOR
-                        PREFETCH_NEXT_WORD
                         continue;
                     }
                     goto slow_word;
@@ -577,7 +566,7 @@ static size_t split_at_ws(const uint8_t *t, size_t target, size_t len) {
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Persistent Worker Thread  (v5.7.11 — replaces OMP fork/join)
+ *  Persistent Worker Thread  (v5.7.12 — replaces OMP fork/join)
  *  ──────────────────────────────────────────────────────────────
  *  OMP barrier wakeup = ~170µs measured overhead on Colab Xeon.
  *  A persistent pthread with semaphore = ~2-5µs wakeup latency.
@@ -912,7 +901,7 @@ static PyObject *py_get_hardware_info(PyObject *self, PyObject *args) {
 #endif
     if (!brand[0]) strcpy(brand,"Unknown CPU");
     char info[320];
-    snprintf(info,sizeof(info),"%s [Turbo/v5.7.11/64K-SA+%s/%s 64Ksets×2ways intcache=%u]",
+    snprintf(info,sizeof(info),"%s [Turbo/v5.7.12/64K-SA+%s/%s 64Ksets×2ways intcache=%u]",
              brand,
 #if HAVE_AVX2
              "AVX2",
@@ -942,7 +931,7 @@ static PyMethodDef methods[] = {
 };
 static struct PyModuleDef moddef = {
     PyModuleDef_HEAD_INIT,"crayon_turbo",
-    "CRAYON Turbo v5.7.11: 64K-SA+AVX2+OMP+numpy", -1, methods
+    "CRAYON Turbo v5.7.12: 64K-SA+AVX2+OMP+numpy", -1, methods
 };
 PyMODINIT_FUNC PyInit_crayon_turbo(void) {
     memset(g_par_wc,0,sizeof(g_par_wc));
