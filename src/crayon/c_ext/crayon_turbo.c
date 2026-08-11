@@ -1,7 +1,7 @@
 /*
- * CRAYON TURBO ENGINE v5.7.15 (L2-Resident Cache + Clean OMP)
+ * CRAYON TURBO ENGINE v5.7.16 (Two-Level L1+L2 Word Cache)
  * ==============================================================================
- * Target: >= 100M tokens/sec on all real-world text, all sizes.
+ * Target: >= 120M tokens/sec on all real-world text, all sizes.
  *
  * Architecture:
  *  1. BYTE LUT + PAIR LUT: O(1) for single-char and 2-char tokens.
@@ -64,10 +64,15 @@
  *  ~95% of all word occurrences → 95% L2 hit rate.
  * ══════════════════════════════════════════════════════════════ */
 #define WC_SETS_SHIFT   16
-#define WC_SETS         (1u << WC_SETS_SHIFT)   /* 64K sets */
+#define WC_SETS         (1u << WC_SETS_SHIFT)   /* 64K sets = 4MB L3 cache */
 #define WC_SET_MASK     (WC_SETS - 1)
 #define WC_WAYS         2
 #define WC_TOTAL        (WC_SETS * WC_WAYS)     /* 128K entries = 4MB total */
+
+#define L1_SETS         1024u
+#define L1_SET_MASK     (L1_SETS - 1u)
+/* g_wc_gen is bumped in load_dat(); triggers lazy L1 clear on next call. */
+static uint32_t g_wc_gen = 0;
 
 typedef struct {
     uint64_t key;       /* hash with len in top 8 bits; 0 = unused */
@@ -75,6 +80,13 @@ typedef struct {
     int32_t  ntoks;     /* 0 = unused/uncacheable, 1-4 = valid count */
     int32_t  _pad;      /* pad to exactly 32 bytes */
 } WCEntry;  /* 32 bytes. 2 entries = 64 bytes = 1 cache line. */
+
+/* L1 word cache: thread-local per-thread hot word cache.
+ * Placed after WCEntry typedef so the array type is known.
+ * ~10-cycle L2 access vs ~30-cycle L3 for the 64K-set main cache. */
+static __thread uint32_t tl_l1_gen;
+static __thread WCEntry  tl_l1wc[L1_SETS * WC_WAYS];  /* 64KB per thread */
+
 
 /* ══════════════════════════════════════════════════════════════
  *  Global DAT State
@@ -319,6 +331,13 @@ static inline int dat_match(const uint8_t * restrict t, size_t end, size_t pos,
  * ══════════════════════════════════════════════════════════════ */
 static void tokenize_one(const uint8_t * restrict text, size_t len,
                           TBuf * restrict out, WCEntry * restrict wc) {
+    /* Lazily clear L1 cache when vocabulary changes */
+    if (__builtin_expect(tl_l1_gen != g_wc_gen, 0)) {
+        memset(tl_l1wc, 0, sizeof(tl_l1wc));
+        tl_l1_gen = g_wc_gen;
+    }
+    WCEntry * restrict l1wc = tl_l1wc;
+
     size_t pos = 0;
     const int32_t * restrict blut = g_byte_lut;
     const uint8_t * restrict isw_lut = g_isword;
@@ -391,14 +410,47 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
                 }
 
 
-                /* 2-way set-associative lookup (entire set in 1 cache line) */
-                uint32_t si = (uint32_t)((key * 11400714819323198485ULL) >> 48) & WC_SET_MASK;
-                WCEntry *e0 = &wc[si * 2];
-                WCEntry *e1 = e0 + 1;
+                /* Two-level word cache:
+                 *  L1: 1K-set × 2-way = 64KB, L2-resident (~10 cycles)
+                 *  L2: 64K-set × 2-way = 4MB, L3-resident (~30 cycles)
+                 * One multiply, two set indices from different bit ranges. */
+                uint64_t hv   = key * 11400714819323198485ULL;
+                uint32_t l1si = (uint32_t)(hv >> 36) & L1_SET_MASK;
+                uint32_t si   = (uint32_t)(hv >> 48) & WC_SET_MASK;
+                WCEntry *l1e0 = &l1wc[l1si * 2], *l1e1 = l1e0 + 1;
+                WCEntry *e0   = &wc[si * 2],      *e1   = e0 + 1;
 
-                /* Check way 0 */
+                /* ── L1 HIT (L2-resident ~10 cycles) ── */
+                if (__builtin_expect(l1e0->key == key, 1)) {
+                    if (__builtin_expect(l1e0->ntoks > 0, 1)) {
+                        int nt = l1e0->ntoks;
+                        FAST_PUSH(l1e0->ids[0]);
+                        if (nt >= 2) FAST_PUSH(l1e0->ids[1]);
+                        if (nt >= 3) FAST_PUSH(l1e0->ids[2]);
+                        if (nt == 4) FAST_PUSH(l1e0->ids[3]);
+                        FUSE_SEPARATOR
+                        continue;
+                    }
+                    goto slow_word;
+                }
+                if (__builtin_expect(l1e1->key == key, 0)) {
+                    if (__builtin_expect(l1e1->ntoks > 0, 1)) {
+                        int nt = l1e1->ntoks;
+                        FAST_PUSH(l1e1->ids[0]);
+                        if (nt >= 2) FAST_PUSH(l1e1->ids[1]);
+                        if (nt >= 3) FAST_PUSH(l1e1->ids[2]);
+                        if (nt == 4) FAST_PUSH(l1e1->ids[3]);
+                        WCEntry tmp = *l1e0; *l1e0 = *l1e1; *l1e1 = tmp;
+                        FUSE_SEPARATOR
+                        continue;
+                    }
+                    goto slow_word;
+                }
+
+                /* ── L2 HIT (L3-resident ~30 cycles) ── */
                 if (__builtin_expect(e0->key == key, 1)) {
                     if (__builtin_expect(e0->ntoks > 0, 1)) {
+                        *l1e1 = *l1e0; *l1e0 = *e0;  /* warm L1 */
                         int nt = e0->ntoks;
                         FAST_PUSH(e0->ids[0]);
                         if (nt >= 2) FAST_PUSH(e0->ids[1]);
@@ -409,23 +461,22 @@ static void tokenize_one(const uint8_t * restrict text, size_t len,
                     }
                     goto slow_word;
                 }
-                /* Check way 1 */
                 if (__builtin_expect(e1->key == key, 0)) {
                     if (__builtin_expect(e1->ntoks > 0, 1)) {
-                        int nt = e1->ntoks;
-                        FAST_PUSH(e1->ids[0]);
-                        if (nt >= 2) FAST_PUSH(e1->ids[1]);
-                        if (nt >= 3) FAST_PUSH(e1->ids[2]);
-                        if (nt == 4) FAST_PUSH(e1->ids[3]);
-                        /* Promote to way 0 (swap) */
                         WCEntry tmp = *e0; *e0 = *e1; *e1 = tmp;
+                        *l1e1 = *l1e0; *l1e0 = *e0;  /* warm L1 */
+                        int nt = e0->ntoks;
+                        FAST_PUSH(e0->ids[0]);
+                        if (nt >= 2) FAST_PUSH(e0->ids[1]);
+                        if (nt >= 3) FAST_PUSH(e0->ids[2]);
+                        if (nt == 4) FAST_PUSH(e0->ids[3]);
                         FUSE_SEPARATOR
                         continue;
                     }
                     goto slow_word;
                 }
 
-                /* ── CACHE MISS ── */
+                /* ── COLD MISS: DAT walk ── */
 slow_word:;
                 {
                     size_t wp = ws;
@@ -442,7 +493,7 @@ slow_word:;
                             cnt++; wp++;
                         }
                     }
-                    /* Insert: evict way 1, promote to way 0 */
+                    /* Insert into L2 (evict way1 → way0) */
                     *e1 = *e0;
                     e0->key = key;
                     if (cnt >= 1 && cnt <= 4) {
@@ -451,11 +502,14 @@ slow_word:;
                         e0->ids[1] = (cnt >= 2) ? ts[1] : -1;
                         e0->ids[2] = (cnt >= 3) ? ts[2] : -1;
                         e0->ids[3] = (cnt == 4) ? ts[3] : -1;
+                        /* Also warm L1 with the new entry */
+                        *l1e1 = *l1e0; *l1e0 = *e0;
                         FUSE_SEPARATOR
                     } else {
                         e0->ntoks = 0;
                         e0->ids[0] = -1; e0->ids[1] = -1;
                         e0->ids[2] = -1; e0->ids[3] = -1;
+                        /* Don't cache uncacheable (>4 tokens) in L1 */
                     }
                 }
             } else {
@@ -591,11 +645,10 @@ static pthread_t    g_worker_tid;
 static void *worker_thread_fn(void *arg) {
     SplitWorker *w = (SplitWorker *)arg;
     while (1) {
-        /* Spin for up to 5M iterations.
-         * Intel (140-cycle pause @ 2.2GHz): ~318ms window — worker never sleeps during benchmarks.
-         * AMD Zen2 (15-cycle pause @ 3.5GHz): ~21ms window — covers all benchmark call sizes
-         * including 4MB (~20ms). Fixes AMD EPYC dips at 256KB-2MB (prior 200K = only 0.86ms). */
-        for (int i = 0; i < 5000000; i++) {
+        /* 200K iterations: ~12ms on Intel 2.2GHz. Keeps worker warm for all
+         * benchmark inter-call times without triggering GCP hypervisor throttling
+         * (5M iterations caused scheduler interference on virtualized Intel). */
+        for (int i = 0; i < 200000; i++) {
             if (sem_trywait(&w->sem_work) == 0) goto got_work;
             _mm_pause();
         }
@@ -744,6 +797,7 @@ static PyObject *py_load_dat(PyObject *self, PyObject *args) {
     /* Start/restart persistent worker thread now that caches are ready */
     _stop_worker();   /* stop old worker if any (e.g., on reload) */
     _ensure_par_caches();
+    g_wc_gen++;       /* invalidate per-thread L1 caches */
     _start_worker();
     return PyLong_FromUnsignedLong(sz);
 }
